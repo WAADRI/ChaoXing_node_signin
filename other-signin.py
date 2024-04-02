@@ -2,21 +2,46 @@ from email.mime.text import MIMEText
 from email.utils import formataddr
 from hashlib import md5
 
-import aiofiles
-import aiohttp
-import aiosmtplib
+
 import asyncio
 import base64
 import datetime
 import json
 import logging
 import os
-import portalocker
 import random
 import re
+import subprocess
+import sys
 import time
 import urllib.parse
 import uuid
+
+package_install = False
+required_packages = ["aiofiles", "aiohttp", "aiosmtplib", "portalocker", "websockets", "yaml", "Crypto"]
+install_packages = ["aiofiles", "aiohttp", "portalocker", "websockets", "aiosmtplib", "pyyaml", "pycryptodome"]
+
+
+def install(_package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", _package, "-i", "https://pypi.mirrors.ustc.edu.cn/simple/"])
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.info("开始检查第三方库安装情况")
+for p in range(len(required_packages)):
+    try:
+        __import__(required_packages[p])
+        logging.info(f"第三方库“{install_packages[p]}”已安装")
+    except ImportError:
+        package_install = True
+        logging.info(f"第三方库“{install_packages[p]}”未安装，开始安装")
+        install(install_packages[p])
+if package_install:
+    logging.info("第三方库安装完成，程序即将重新启动")
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+import aiofiles
+import aiohttp
+import aiosmtplib
+import portalocker
 import websockets
 import yaml
 from Crypto.Cipher import AES
@@ -36,7 +61,6 @@ class ColoredFormatter(logging.Formatter):
         msg = super().format(record)
         color_code = self.COLOR_CODES.get(record.levelno, "")
         return f"{color_code}{msg}{self.RESET_CODE}"
-
 
 realpath = os.path.dirname(sys.argv[0])
 config_path = os.path.join(realpath, "node_config.yaml")
@@ -369,6 +393,7 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                     if is_find:
                         send_text = "，签到活动名称为“"+name_one+"”，指定签到地点为“"+set_address+"”，请使用微信小程序“WAADRI的扫码工具”扫描学习通签到二维码来完成自动签到。"
                         send_text2 = "，指定签到地点为“"+set_address+"”，请使用微信小程序“WAADRI的扫码工具”扫描学习通签到二维码来完成自动签到"
+                        send_text3 = "，指定签到地点为“"+set_address+"”"
                     else:
                         get_locationurl = "https://mobilelearn.chaoxing.com/pptSign/errorLocation?DB_STRATEGY=PRIMARY_KEY&STRATEGY_PARA=activeId&activeId="+str(aid)+"&uid="+str(uid)+"&location=%7B%22result%22%3A%201%2C%20%22latitude%22%3A%2039.5426%2C%20%22longitude%22%3A%20116.2329%2C%20%22address%22%3A%20%22%E4%B8%AD%E5%9B%BD%E5%8C%97%E4%BA%AC%E5%B8%82%22%7D&errortype=errorLocation2"
                         while True:
@@ -384,12 +409,15 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                             set_longitude = re.search(r'<input type="hidden" id="locationLongitude" value="(.+)">', rres_text, re.I).groups()[0]
                             send_text = "，签到活动名称为“"+name_one+"”，指定签到地点为“"+set_address+"”，请使用微信小程序“WAADRI的扫码工具”扫描学习通签到二维码来完成自动签到。"
                             send_text2 = "，指定签到地点为“"+set_address+"”，请使用微信小程序“WAADRI的扫码工具”扫描学习通签到二维码来完成自动签到"
+                            send_text3 = "，指定签到地点为“"+set_address+"”"
                         else:
                             send_text = "，签到活动名称为“"+name_one+"”，但无法获取指定位置信息，请使用微信小程序“WAADRI的扫码工具”选择指定位置并扫描学习通签到二维码来完成自动签到。"
                             send_text2 = "，但无法获取指定位置信息，请使用微信小程序“WAADRI的扫码工具”选择指定位置并扫描学习通签到二维码来完成自动签到"
+                            send_text3 = "，但无法获取指定位置信息"
                 else:
                     send_text = "，签到活动名称为“"+name_one+"”，但无法获取指定位置信息，请使用微信小程序“WAADRI的扫码工具”选择指定位置并扫描学习通签到二维码来完成自动签到。"
                     send_text2 = "，但无法获取指定位置信息，请使用微信小程序“WAADRI的扫码工具”选择指定位置并扫描学习通签到二维码来完成自动签到"
+                    send_text3 = "，但无法获取指定位置信息"
                 asyncio.create_task(send_email("<p>【学习通在线自动签到系统二维码签到扫码通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到"+str(res['data']['ewmRefreshTime'])+"秒自动更新且指定了签到地点的二维码签到"+send_text+"<a href=\"https://api.waadri.top/ChaoXing/MSIT.php\">小程序使用教程点这里</a>。</p><p style=\"text-indent:2em;\">微信小程序二维码：</p><img src=\"https://www.waadri.top/source/gh_3c371f2be720_1280.jpg\" style=\"width: 100%;height: auto;max-width: 200px;max-height: auto;\">", email, "学习通二维码签到扫码通知"))
                 asyncio.create_task(send_wechat_message(uid, "【学习通二维码签到扫码通知】 课程或班级“"+na+"”监测到"+str(res['data']['ewmRefreshTime'])+"秒自动更新且指定了签到地点的二维码签到"+send_text+"小程序使用教程见https://api.waadri.top/ChaoXing/MSIT.php"))
                 encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为"+str(res['data']['ewmRefreshTime'])+"秒自动更新且指定了签到地点的二维码签到"+send_text2+"，小程序使用教程见https://api.waadri.top/ChaoXing/MSIT.php\n"}), server_key, server_iv)
@@ -420,6 +448,7 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                     if is_find:
                         send_text = "，签到活动名称为“"+name_one+"”，指定签到地点为“"+set_address+"”，请使用微信小程序“WAADRI的扫码工具”扫描学习通签到二维码来完成自动签到。"
                         send_text2 = "，指定签到地点为“"+set_address+"”，请使用微信小程序“WAADRI的扫码工具”扫描学习通签到二维码来完成自动签到"
+                        send_text3 = "，指定签到地点为“"+set_address+"”"
                     else:
                         get_locationurl = "https://mobilelearn.chaoxing.com/pptSign/errorLocation?DB_STRATEGY=PRIMARY_KEY&STRATEGY_PARA=activeId&activeId="+str(aid)+"&uid="+str(uid)+"&location=%7B%22result%22%3A%201%2C%20%22latitude%22%3A%2039.5426%2C%20%22longitude%22%3A%20116.2329%2C%20%22address%22%3A%20%22%E4%B8%AD%E5%9B%BD%E5%8C%97%E4%BA%AC%E5%B8%82%22%7D&errortype=errorLocation2"
                         while True:
@@ -435,12 +464,15 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                             set_longitude = re.search(r'<input type="hidden" id="locationLongitude" value="(.+)">', rres_text, re.I).groups()[0]
                             send_text = "，签到活动名称为“"+name_one+"”，指定签到地点为“"+set_address+"”，请使用微信小程序“WAADRI的扫码工具”扫描学习通签到二维码来完成自动签到。"
                             send_text2 = "，指定签到地点为“"+set_address+"”，请使用微信小程序“WAADRI的扫码工具”扫描学习通签到二维码来完成自动签到"
+                            send_text3 = "，指定签到地点为“"+set_address+"”"
                         else:
                             send_text = "，签到活动名称为“"+name_one+"”，但无法获取指定位置信息，请使用微信小程序“WAADRI的扫码工具”选择指定位置并扫描学习通签到二维码来完成自动签到。"
                             send_text2 = "，但无法获取指定位置信息，请使用微信小程序“WAADRI的扫码工具”选择指定位置并扫描学习通签到二维码来完成自动签到"
+                            send_text3 = "，但无法获取指定位置信息"
                 else:
                     send_text = "，签到活动名称为“"+name_one+"”，但无法获取指定位置信息，请使用微信小程序“WAADRI的扫码工具”选择指定位置并扫描学习通签到二维码来完成自动签到。"
                     send_text2 = "，但无法获取指定位置信息，请使用微信小程序“WAADRI的扫码工具”选择指定位置并扫描学习通签到二维码来完成自动签到"
+                    send_text3 = "，但无法获取指定位置信息"
                 asyncio.create_task(send_email("<p>【学习通在线自动签到系统二维码签到扫码通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到无自动更新且指定了签到地点的二维码签到"+send_text+"<a href=\"https://api.waadri.top/ChaoXing/MSIT.php\">小程序使用教程点这里</a>。</p><p style=\"text-indent:2em;\">微信小程序二维码：</p><img src=\"https://www.waadri.top/source/gh_3c371f2be720_1280.jpg\" style=\"width: 100%;height: auto;max-width: 200px;max-height: auto;\">", email, "学习通二维码签到扫码通知"))
                 asyncio.create_task(send_wechat_message(uid, "【学习通二维码签到扫码通知】 课程或班级“"+na+"”监测到无自动更新且指定了签到地点的二维码签到"+send_text+"小程序使用教程见https://api.waadri.top/ChaoXing/MSIT.php"))
                 encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为无自动更新且指定了签到地点的二维码签到"+send_text2+"，小程序使用教程见https://api.waadri.top/ChaoXing/MSIT.php\n"}), server_key, server_iv)
@@ -1483,7 +1515,7 @@ async def group_signt(session, uid, name, aid, is_numing, is_anti_fishing, is_em
             encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"等待10秒后开始自动签到\n"}), server_key, server_iv)
             await send_message(sign_server_ws, encrypt)
             await asyncio.sleep(10)
-        async with session.get("https://mobilelearn.chaoxing.com/sign/stuSignajax?activeId="+str(aid)+"&uid="+str(uid)+"&latitude="+ latitude+"&longitude="+longitude+"&address="+address +"&fid="+user_list[uid]["schoolid"]+"&objectId="+objectid, headers=browser_headers) as resp:
+        async with session.get("https://mobilelearn.chaoxing.com/sign/stuSignajax?activeId=" + str(aid) +"&uid=" + str(uid) +"&latitude=" + latitude +"&longitude=" + longitude +"&address=" + address +"&fid=" + user_list[uid]["schoolid"] +"&objectId=" + objectid, headers=browser_headers) as resp:
             info = await resp.text()
         if info == "success":
             user_list[uid]["success_sign_num"] += 1
@@ -1658,7 +1690,7 @@ async def remove_sign_info(uid):
                 del qrcode_sign_list[k]
         if uid in user_list.keys():
             if user_list[uid]["port"] == 1 and "ws_sign_heartbeat" in user_list[uid].keys() and not user_list[uid]["ws_sign_heartbeat"].done():
-                user_list[uid]["ws_sign_heartbeat"].cancel()
+                    user_list[uid]["ws_sign_heartbeat"].cancel()
             for s in list(user_list[uid]["sign_task_list"].keys()):
                 if not user_list[uid]["sign_task_list"][s].done():
                     user_list[uid]["sign_task_list"][s].cancel()
