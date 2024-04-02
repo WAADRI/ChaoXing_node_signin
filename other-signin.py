@@ -1147,7 +1147,10 @@ async def sign_server_ws_monitor():
                     elif message == "duplicate_name":
                         logging.warning("您的节点名称与目前已接入节点的名称存在重复，请在配置文件中修改节点名称后重新启动本程序")
                         await sign_server_ws.close()
-                        return 0
+                        time.sleep(3)
+                        print("按任意键退出...")
+                        msvcrt.getch()
+                        sys.exit()
                     elif message != "ping":
                         try:
                             _data = json.loads(message)
