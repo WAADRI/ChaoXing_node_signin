@@ -10,7 +10,6 @@ import base64
 import datetime
 import json
 import logging
-import msvcrt
 import os
 import portalocker
 import random
@@ -58,8 +57,8 @@ if os.path.isfile(config_path):
         if node_name == "":
             print("节点名称不能为空，请修改配置文件后重新启动节点程序")
             time.sleep(3)
-            print("按任意键退出...")
-            msvcrt.getch()
+            print("按回车键退出...")
+            input()
             sys.exit()
 else:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -93,8 +92,8 @@ uuid: '''+str(uuid.uuid4())
         file.write(data)
     logging.info('配置文件已生成，路径为'+config_path+'，请修改其中的配置后再次运行程序')
     time.sleep(3)
-    print("按任意键退出...")
-    msvcrt.getch()
+    print("按回车键退出...")
+    input()
     sys.exit()
 logger = logging.getLogger()
 if node_debug:
@@ -1148,8 +1147,8 @@ async def sign_server_ws_monitor():
                         logging.warning("您的节点名称与目前已接入节点的名称存在重复，请在配置文件中修改节点名称后重新启动本程序")
                         await sign_server_ws.close()
                         time.sleep(3)
-                        print("按任意键退出...")
-                        msvcrt.getch()
+                        print("按回车键退出...")
+                        input()
                         sys.exit()
                     elif message != "ping":
                         try:
