@@ -16,7 +16,7 @@ import sys
 import time
 import urllib.parse
 import uuid
-import requests
+
 
 package_install = False
 required_packages = ["aiofiles", "aiohttp", "aiosmtplib", "portalocker", "requests", "websockets", "yaml", "Crypto"]
@@ -46,6 +46,7 @@ import aiofiles
 import aiohttp
 import aiosmtplib
 import portalocker
+import requests
 import websockets
 import yaml
 from Crypto.Cipher import AES
