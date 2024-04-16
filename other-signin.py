@@ -2,22 +2,50 @@ from email.mime.text import MIMEText
 from email.utils import formataddr
 from hashlib import md5
 
-import aiofiles
-import aiohttp
-import aiosmtplib
+
 import asyncio
 import base64
 import datetime
 import json
 import logging
 import os
-import portalocker
 import random
 import re
+import subprocess
 import sys
 import time
 import urllib.parse
 import uuid
+import requests
+
+package_install = False
+required_packages = ["aiofiles", "aiohttp", "aiosmtplib", "portalocker", "requests", "websockets", "yaml", "Crypto"]
+install_packages = ["aiofiles", "aiohttp", "aiosmtplib", "portalocker", "requests", "websockets", "pyyaml", "pycryptodome"]
+
+
+def install(_package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", _package, "-i", "https://pypi.mirrors.ustc.edu.cn/simple/"])
+
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.info("开始检查第三方库安装情况")
+for p in range(len(required_packages)):
+    try:
+        __import__(required_packages[p])
+        logging.info(f"第三方库“{install_packages[p]}”已安装")
+    except ImportError:
+        package_install = True
+        logging.info(f"第三方库“{install_packages[p]}”未安装，开始安装")
+        install(install_packages[p])
+if package_install:
+    logging.info("第三方库安装完成，程序即将重新启动")
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+
+import aiofiles
+import aiohttp
+import aiosmtplib
+import portalocker
 import websockets
 import yaml
 from Crypto.Cipher import AES
@@ -55,7 +83,7 @@ if os.path.isfile(config_path):
         node_debug = config["debug"]
         node_uuid = config["uuid"]
         if node_name == "":
-            print("节点名称不能为空，请修改配置文件后重新启动节点程序")
+            logging.warning("节点名称不能为空，请修改配置文件后重新启动节点程序")
             time.sleep(3)
             print("按回车键退出...")
             input()
@@ -118,8 +146,19 @@ chaoxing_headers = {
 browser_headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36"
 }
-version = "1.0"
+version = "1.1"
 user_list = {}
+try:
+    res = requests.get("https://api.waadri.top/ChaoXing/api/get_version.json", timeout=10).json()
+    latest_version = res["latest_version"]
+    if latest_version == version:
+        logging.info("当前节点程序已为最新版本")
+    else:
+        logging.warning("节点程序检测到新版本，更新内容如下，请在浏览器中访问“"+res["py_download_url"]+"”下载新版本并替换当前版本使用\n"+res["new_version_log"])
+        time.sleep(3)
+except:
+    logging.warning("网络连接异常，版本更新检查失败")
+    time.sleep(3)
 
 
 async def send_email(text, user_email, result):
@@ -471,20 +510,12 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
             if res['data']['otherId'] == 0:
                 if res['data']['ifphoto'] == 1:
                     if is_anti_fishing and is_embezzle and (info_type == "all" or info_type == "picture"):
-                        while True:
-                            try:
-                                async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getAttendList?activeId="+str(aid)+"&appType=15&classId="+str(class_id)+"&fid=0", headers=browser_headers, timeout=10) as resp:
-                                    res1 = json.loads(await resp.text())
-                                break
-                            except Exception as e:
-                                logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                        student_count = res1["data"]["weiqian"]+res1["data"]["yiqian"]
                         asyncio.create_task(send_email("<p>【学习通在线自动签到系统拍照签到通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到拍照签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统将在监测到已签人数不少于未签人数后随机使用其他已签到同学的拍照图片进行自动签到。</p>", email, "学习通拍照签到通知"))
                         asyncio.create_task(send_wechat_message(uid, "【学习通拍照签到通知】 课程或班级“"+na+"”监测到拍照签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统将在监测到已签人数不少于未签人数后随机使用其他已签到同学的拍照图片进行自动签到"))
                         encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为拍照签到，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统将在监测到已签人数不少于未签人数后随机使用其他已签到同学的拍照图片进行自动签到\n"}), server_key, server_iv)
                         await send_message(sign_server_ws, encrypt)
                         while True:
-                            result = await anti_fishing_check_in_mode(student_count, session, aid)
+                            result = await anti_fishing_check_in_mode(session, aid)
                             if result is None:
                                 asyncio.create_task(send_email("<p>【学习通在线自动签到系统签到人数取消监控通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到拍照签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控。</p>", email, "学习通签到人数取消监控通知"))
                                 asyncio.create_task(send_wechat_message(uid, "【学习通签到人数取消监控通知】 课程或班级“"+na+"”监测到拍照签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控"))
@@ -513,20 +544,12 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                         await send_message(sign_server_ws, encrypt)
                         append_text = "，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统随机使用"+use_name+"同学的拍照图片进行签到"
                     elif is_anti_fishing:
-                        while True:
-                            try:
-                                async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getAttendList?activeId="+str(aid)+"&appType=15&classId="+str(class_id)+"&fid=0", headers=browser_headers, timeout=10) as resp:
-                                    res1 = json.loads(await resp.text())
-                                break
-                            except Exception as e:
-                                logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                        student_count = res1["data"]["weiqian"]+res1["data"]["yiqian"]
                         asyncio.create_task(send_email("<p>【学习通在线自动签到系统拍照签到通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到拍照签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到。</p>", email, "学习通拍照签到通知"))
                         asyncio.create_task(send_wechat_message(uid, "【学习通拍照签到通知】 课程或班级“"+na+"”监测到拍照签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到"))
                         encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为拍照签到，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到\n"}), server_key, server_iv)
                         await send_message(sign_server_ws, encrypt)
                         while True:
-                            result = await anti_fishing_check_in_mode(student_count, session, aid)
+                            result = await anti_fishing_check_in_mode(session, aid)
                             if result is None:
                                 asyncio.create_task(send_email("<p>【学习通在线自动签到系统签到人数取消监控通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到拍照签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控。</p>", email, "学习通签到人数取消监控通知"))
                                 asyncio.create_task(send_wechat_message(uid, "【学习通签到人数取消监控通知】 课程或班级“"+na+"”监测到拍照签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控"))
@@ -575,20 +598,12 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                     }
                 else:
                     if is_anti_fishing:
-                        while True:
-                            try:
-                                async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getAttendList?activeId="+str(aid)+"&appType=15&classId="+str(class_id)+"&fid=0", headers=browser_headers, timeout=10) as resp:
-                                    res1 = json.loads(await resp.text())
-                                break
-                            except Exception as e:
-                                logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                        student_count = res1["data"]["weiqian"]+res1["data"]["yiqian"]
                         asyncio.create_task(send_email("<p>【学习通在线自动签到系统普通签到通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到普通签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到。</p>", email, "学习通普通签到通知"))
                         asyncio.create_task(send_wechat_message(uid, "【学习通普通签到通知】 课程或班级“"+na+"”监测到普通签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到"))
                         encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为普通签到，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到\n"}), server_key, server_iv)
                         await send_message(sign_server_ws, encrypt)
                         while True:
-                            result = await anti_fishing_check_in_mode(student_count, session, aid)
+                            result = await anti_fishing_check_in_mode(session, aid)
                             if result is None:
                                 asyncio.create_task(send_email("<p>【学习通在线自动签到系统签到人数取消监控通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到普通签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控。</p>", email, "学习通签到人数取消监控通知"))
                                 asyncio.create_task(send_wechat_message(uid, "【学习通签到人数取消监控通知】 课程或班级“"+na+"”监测到普通签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控"))
@@ -631,20 +646,12 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                     return 0
                 sign_code = check_sign_code.groups()[0]
                 if is_anti_fishing:
-                    while True:
-                        try:
-                            async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getAttendList?activeId="+str(aid)+"&appType=15&classId="+str(class_id)+"&fid=0", headers=browser_headers, timeout=10) as resp:
-                                res1 = json.loads(await resp.text())
-                            break
-                        except Exception as e:
-                            logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                    student_count = res1["data"]["weiqian"]+res1["data"]["yiqian"]
                     asyncio.create_task(send_email("<p>【学习通在线自动签到系统手势签到通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到手势签到，签到手势为“"+sign_code+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到。</p>", email, "学习通手势签到通知"))
                     asyncio.create_task(send_wechat_message(uid, "【学习通手势签到通知】 课程或班级“"+na+"”监测到手势签到，签到手势为“"+sign_code+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到"))
                     encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为手势签到，签到手势为“"+sign_code+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到\n"}), server_key, server_iv)
                     await send_message(sign_server_ws, encrypt)
                     while True:
-                        result = await anti_fishing_check_in_mode(student_count, session, aid)
+                        result = await anti_fishing_check_in_mode(session, aid)
                         if result is None:
                             asyncio.create_task(send_email("<p>【学习通在线自动签到系统签到人数取消监控通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到手势签到，签到手势为“"+sign_code+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控。</p>", email, "学习通签到人数取消监控通知"))
                             asyncio.create_task(send_wechat_message(uid, "【学习通签到人数取消监控通知】 课程或班级“"+na+"”监测到手势签到，签到手势为“"+sign_code+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控"))
@@ -719,20 +726,12 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                         del user_list[uid]["sign_task_list"][str(aid)]
                         return 0
                     if is_anti_fishing:
-                        while True:
-                            try:
-                                async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getAttendList?activeId="+str(aid)+"&appType=15&classId="+str(class_id)+"&fid=0", headers=browser_headers, timeout=10) as resp:
-                                    res1 = json.loads(await resp.text())
-                                break
-                            except Exception as e:
-                                logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                        student_count = res1["data"]["weiqian"]+res1["data"]["yiqian"]
                         asyncio.create_task(send_email("<p>【学习通在线自动签到系统指定位置签到通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到指定了签到地点的位置签到，指定签到地点为“"+set_address+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到。</p>", email, "学习通指定位置签到通知"))
                         asyncio.create_task(send_wechat_message(uid, "【学习通指定位置签到通知】 课程或班级“"+na+"”监测到指定了签到地点的位置签到，指定签到地点为“"+set_address+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到"))
                         encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为指定了签到地点的位置签到，指定签到地点为“"+set_address+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到\n"}), server_key, server_iv)
                         await send_message(sign_server_ws, encrypt)
                         while True:
-                            result = await anti_fishing_check_in_mode(student_count, session, aid)
+                            result = await anti_fishing_check_in_mode(session, aid)
                             if result is None:
                                 asyncio.create_task(send_email("<p>【学习通在线自动签到系统签到人数取消监控通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到指定了签到地点的位置签到，指定签到地点为“"+set_address+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控。</p>", email, "学习通签到人数取消监控通知"))
                                 asyncio.create_task(send_wechat_message(uid, "【学习通签到人数取消监控通知】 课程或班级“"+na+"”监测到指定了签到地点的位置签到，指定签到地点为“"+set_address+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控"))
@@ -761,20 +760,12 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                     }
                 else:
                     if is_anti_fishing and is_embezzle and (info_type == "all" or info_type == "location"):
-                        while True:
-                            try:
-                                async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getAttendList?activeId="+str(aid)+"&appType=15&classId="+str(class_id)+"&fid=0", headers=browser_headers, timeout=10) as resp:
-                                    res1 = json.loads(await resp.text())
-                                break
-                            except Exception as e:
-                                logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                        student_count = res1["data"]["weiqian"]+res1["data"]["yiqian"]
                         asyncio.create_task(send_email("<p>【学习通在线自动签到系统普通位置签到通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到普通位置签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统将在监测到已签人数不少于未签人数后随机使用其他已签到同学的位置信息进行自动签到。</p>", email, "学习通普通位置签到通知"))
                         asyncio.create_task(send_wechat_message(uid, "【学习通普通位置签到通知】 课程或班级“"+na+"”监测到普通位置签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统将在监测到已签人数不少于未签人数后随机使用其他已签到同学的位置信息进行自动签到"))
                         encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为普通位置签到，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统将在监测到已签人数不少于未签人数后随机使用其他已签到同学的位置信息进行自动签到\n"}), server_key, server_iv)
                         await send_message(sign_server_ws, encrypt)
                         while True:
-                            result = await anti_fishing_check_in_mode(student_count, session, aid)
+                            result = await anti_fishing_check_in_mode(session, aid)
                             if result is None:
                                 asyncio.create_task(send_email("<p>【学习通在线自动签到系统签到人数取消监控通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到普通位置签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控。</p>", email, "学习通签到人数取消监控通知"))
                                 asyncio.create_task(send_wechat_message(uid, "【学习通签到人数取消监控通知】 课程或班级“"+na+"”监测到普通位置签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控"))
@@ -805,20 +796,12 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                         await send_message(sign_server_ws, encrypt)
                         append_text = "，由于您启用了反钓鱼签到模式和签到信息盗用模式，系统随机使用"+use_name+"同学的位置信息进行签到"
                     elif is_anti_fishing:
-                        while True:
-                            try:
-                                async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getAttendList?activeId="+str(aid)+"&appType=15&classId="+str(class_id)+"&fid=0", headers=browser_headers, timeout=10) as resp:
-                                    res1 = json.loads(await resp.text())
-                                break
-                            except Exception as e:
-                                logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                        student_count = res1["data"]["weiqian"]+res1["data"]["yiqian"]
                         asyncio.create_task(send_email("<p>【学习通在线自动签到系统普通位置签到通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到普通位置签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到。</p>", email, "学习通普通位置签到通知"))
                         asyncio.create_task(send_wechat_message(uid, "【学习通普通位置签到通知】 课程或班级“"+na+"”监测到普通位置签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到"))
                         encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为普通位置签到，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到\n"}), server_key, server_iv)
                         await send_message(sign_server_ws, encrypt)
                         while True:
-                            result = await anti_fishing_check_in_mode(student_count, session, aid)
+                            result = await anti_fishing_check_in_mode(session, aid)
                             if result is None:
                                 asyncio.create_task(send_email("<p>【学习通在线自动签到系统签到人数取消监控通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到普通位置签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控。</p>", email, "学习通签到人数取消监控通知"))
                                 asyncio.create_task(send_wechat_message(uid, "【学习通签到人数取消监控通知】 课程或班级“"+na+"”监测到普通位置签到，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控"))
@@ -891,20 +874,12 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
                     return 0
                 sign_code = check_sign_code.groups()[0]
                 if is_anti_fishing:
-                    while True:
-                        try:
-                            async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getAttendList?activeId="+str(aid)+"&appType=15&classId="+str(class_id)+"&fid=0", headers=browser_headers, timeout=10) as resp:
-                                res1 = json.loads(await resp.text())
-                            break
-                        except Exception as e:
-                            logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                    student_count = res1["data"]["weiqian"]+res1["data"]["yiqian"]
                     asyncio.create_task(send_email("<p>【学习通在线自动签到系统签到码签到通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到签到码签到，签到码为“"+sign_code+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到。</p>", email, "学习通签到码签到通知"))
                     asyncio.create_task(send_wechat_message(uid, "【学习通签到码签到通知】 课程或班级“"+na+"”监测到签到码签到，签到码为“"+sign_code+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到"))
                     encrypt = await get_data_aes_encode(json.dumps({"type": "send_sign_message", "uid": str(uid), "name": name, "message": datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+"该签到为签到码签到，签到码为“"+sign_code+"”，由于您启用了反钓鱼签到模式，系统将在监测到已签人数不少于未签人数后自动签到\n"}), server_key, server_iv)
                     await send_message(sign_server_ws, encrypt)
                     while True:
-                        result = await anti_fishing_check_in_mode(student_count, session, aid)
+                        result = await anti_fishing_check_in_mode(session, aid)
                         if result is None:
                             asyncio.create_task(send_email("<p>【学习通在线自动签到系统签到人数取消监控通知】</p><p style=\"text-indent:2em;\">课程或班级“"+na+"”监测到签到码签到，签到码为“"+sign_code+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控。</p>", email, "学习通签到人数取消监控通知"))
                             asyncio.create_task(send_wechat_message(uid, "【学习通签到人数取消监控通知】 课程或班级“"+na+"”监测到签到码签到，签到码为“"+sign_code+"”，签到活动名称为“"+name_one+"”，由于您启用了反钓鱼签到模式，系统在监测签到人数时发现签到已过期或签到发布时长超过24小时，因此取消了对当前签到活动的签到监控"))
@@ -982,19 +957,26 @@ async def signt(session, uid, name, course_id, class_id, aid, username, password
         logging.error(str(e.__traceback__.tb_lineno)+str(e))
 
 
-async def anti_fishing_check_in_mode(student_count, session, aid, sign_type="class"):
+async def anti_fishing_check_in_mode(session, aid, sign_type="class", student_count=0):
     try:
         if sign_type == "class":
             while True:
                 try:
-                    async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getCount?activeId="+str(aid)+"&appType=15", headers=browser_headers) as resp:
-                        res = json.loads(await resp.text())
+                    async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getCount?activeId="+str(aid)+"&appType=15", headers=browser_headers, timeout=10) as resp:
+                        res1 = json.loads(await resp.text())
+                    break
+                except Exception as e:
+                    print(datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')+str(e.__traceback__.tb_lineno)+str(e))
+            while True:
+                try:
+                    async with session.get("https://mobilelearn.chaoxing.com/pptSign/refeashSignList4Json2?activeId="+str(aid)+"&lastTime=&lastId=0&pageNo=1&appType=15&type=1", headers=browser_headers, timeout=10) as resp:
+                        res2 = json.loads(await resp.text())
                     break
                 except Exception as e:
                     logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-            if res["data"]["activeStatus"] != 1 or int(res["data"]["startTime"])+86400 < int(time.time()):
+            if res2["activeStatus"] != 1 or int(res1["data"]["startTime"]/1000)+86400 < int(time.time()):
                 return None
-            elif res["data"]["yiqian"] >= student_count-res["data"]["yiqian"]:
+            elif res1["data"]["yiqian"] >= res2["weiqianNum"]:
                 return True
             else:
                 return False
@@ -1042,7 +1024,7 @@ async def monitor_the_sign_in_of_other_students(session, sign_type, aid, classid
             else:
                 while True:
                     try:
-                        async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getCount?activeId="+str(aid)+"&appType=15", headers=browser_headers) as resp:
+                        async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getCount?activeId="+str(aid)+"&appType=15", headers=browser_headers, timeout=10) as resp:
                             res = json.loads(await resp.text())
                         break
                     except Exception as e:
@@ -1053,13 +1035,13 @@ async def monitor_the_sign_in_of_other_students(session, sign_type, aid, classid
                     if sign_type == "photo":
                         while True:
                             try:
-                                async with session.get("https://mobilelearn.chaoxing.com/widget/sign/pcTeaSignController/getAttendList?activeId="+str(aid)+"&appType=15&classId="+str(classid)+"&fid=0", headers=browser_headers) as resp:
+                                async with session.get("https://mobilelearn.chaoxing.com/pptSign/refeashSignList4Json2?activeId="+str(aid)+"&lastTime=&lastId=0&pageNo=1&appType=15&type=0", headers=browser_headers, timeout=10) as resp:
                                     res = json.loads(await resp.text())
                                 break
                             except Exception as e:
                                 logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                        if res["result"]:
-                            classmate_info = random.choice(res["data"]["yiqianList"])
+                        if res["list"]:
+                            classmate_info = random.choice(res["list"])
                             return [classmate_info["name"], classmate_info["title"]]
                         else:
                             await asyncio.sleep(10)
@@ -1072,7 +1054,7 @@ async def monitor_the_sign_in_of_other_students(session, sign_type, aid, classid
                                 break
                             except Exception as e:
                                 logging.debug(str(e.__traceback__.tb_lineno)+str(e))
-                        if res["activeStatus"]:
+                        if res["list"]:
                             classmate_info = random.choice(res["list"])
                             return [classmate_info["name"], classmate_info["title"], classmate_info["longitude"], classmate_info["latitude"]]
                         else:
@@ -1144,7 +1126,7 @@ async def sign_server_ws_monitor():
                     if message == "success":
                         logging.info("节点上线成功，节点名称："+node_name+"，节点uuid："+node_uuid+"，可在在线自动签到系统中使用本节点")
                     elif message == "duplicate_name":
-                        logging.warning("您的节点名称与目前已接入节点的名称存在重复，请在配置文件中修改节点名称后重新启动本程序")
+                        logging.warning("您的节点名称与当前其它已接入系统的节点名称存在重复，请在配置文件中修改节点名称后重新启动本程序")
                         await sign_server_ws.close()
                         time.sleep(3)
                         print("按回车键退出...")
