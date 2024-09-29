@@ -1,0 +1,8 @@
+aiofiles
+aiohttp
+aiosmtplib
+portalocker
+requests
+websockets
+pyyaml
+pycryptodome
