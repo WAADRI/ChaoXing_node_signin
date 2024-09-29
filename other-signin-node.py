@@ -19,28 +19,9 @@ import urllib.parse
 import uuid
 import requests
 
-package_install = False
-required_packages = ["aiofiles", "aiohttp", "aiosmtplib", "portalocker", "requests", "websockets", "yaml", "Crypto"]
-install_packages = ["aiofiles", "aiohttp", "aiosmtplib", "portalocker", "requests", "websockets", "pyyaml", "pycryptodome"]
-
-
-def install(_package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", _package, "-i", "https://pypi.mirrors.ustc.edu.cn/simple/"])
-
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logging.info("开始检查第三方库安装情况")
-for p in range(len(required_packages)):
-    try:
-        __import__(required_packages[p])
-        logging.info(f"第三方库“{install_packages[p]}”已安装")
-    except ImportError:
-        package_install = True
-        logging.info(f"第三方库“{install_packages[p]}”未安装，开始安装")
-        install(install_packages[p])
-if package_install:
-    logging.info("第三方库安装完成，程序即将重新启动")
-    os.execl(sys.executable, sys.executable, *sys.argv)
+    
 
 
 import aiohttp
@@ -84,8 +65,6 @@ if os.path.isfile(config_path):
         if node_name == "":
             logging.warning("节点名称不能为空，请修改配置文件后重新启动节点程序")
             time.sleep(3)
-            print("按回车键退出...")
-            input()
             sys.exit()
 else:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -119,8 +98,6 @@ uuid: '''+str(uuid.uuid4())
         file.write(data)
     logging.info('配置文件已生成，路径为'+config_path+'，请修改其中的配置后再次运行程序')
     time.sleep(3)
-    print("按回车键退出...")
-    input()
     sys.exit()
 logger = logging.getLogger()
 if node_debug:
@@ -564,8 +541,6 @@ async def sign_server_ws_monitor():
                         logging.warning("您的节点名称与当前其它已接入系统的节点名称存在重复，请在配置文件中修改节点名称后重新启动本程序")
                         await sign_server_ws.close()
                         time.sleep(3)
-                        print("按回车键退出...")
-                        input()
                         sys.exit()
                     elif message != "ping":
                         try:
