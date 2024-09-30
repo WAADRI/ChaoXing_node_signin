@@ -222,7 +222,7 @@ async def interface_two(uid, courseid, classid, na):
                     user_list[uid]["error_num"] = 0
                     asyncio.create_task(stop_reason(3, uid))
                     return 1
-        elif 3 in user_list[uid]["port"]:
+        else:
             return await interface_three(uid, courseid, classid, na)
     except Exception as e:
         logging.error(str(e.__traceback__.tb_lineno)+str(e))
@@ -230,7 +230,7 @@ async def interface_two(uid, courseid, classid, na):
 
 async def interface_three(uid, courseid, classid, na):
     try:
-        if 3 in user_list[uid]["port"]:
+        if 2 not in user_list[uid]["port"]:
             if str(user_list[uid]["schoolid"]) == "":
                 fid = "0"
             else:
@@ -277,7 +277,7 @@ async def interface_three(uid, courseid, classid, na):
                     user_list[uid]["error_num"] = 0
                     asyncio.create_task(stop_reason(3, uid))
                     return 1
-        elif 2 in user_list[uid]["port"]:
+        else:
             return await interface_two(uid, courseid, classid, na)
     except Exception as e:
         logging.error(str(e.__traceback__.tb_lineno)+str(e))
