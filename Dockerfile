@@ -19,6 +19,4 @@ RUN pip config set global.index-url http://mirrors.cloud.tencent.com/pypi/simple
 
 COPY . /app
 
-EXPOSE 8084
-
 CMD ["python3", "other-signin-node.py"]
