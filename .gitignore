@@ -1,0 +1,10 @@
+*.py
+*.db
+*.sh
+*.yaml
+
+build
+dist
+data
+
+!run.sh
