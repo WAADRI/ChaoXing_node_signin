@@ -127,7 +127,7 @@ docker run -d \
 
 ![image](https://github.com/WAADRI/ChaoXing_node_signin/assets/90495619/3f48708a-8e71-4147-8005-c4a266782014)
 
-目前已有超过50个节点接入了系统，有十余个节点开放使用，欢迎大家继续积极贡献节点资源。
++ 2024/11 目前已有超过50个节点接入了系统，有十余个节点开放使用，欢迎大家继续积极贡献节点资源。
 
 ![image](https://github.com/user-attachments/assets/8dda062c-20b9-4a65-a645-b52b8d54503a)
 
