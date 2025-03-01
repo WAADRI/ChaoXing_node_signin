@@ -28,7 +28,7 @@
 | :------: | :---------------------------------------------------------------------------: | :-----------------------------------------------------------------------------: | :-----------------------------------------------------: |
 | 适合人群 |                             有Windows电脑使用经历                             |                              有编程经验或Linux经验                              |                  有NAS经验或Linux经验                   |
 | 功能差异 |                                       /                                       |                                        /                                        |                  仅支持 amd64 和 arm64                  |
-| 下载链接 | [exe下载链接](https://api.waadri.top/ChaoXing/download/other-signin-node.exe) | [Python下载链接](https://api.waadri.top/ChaoXing/download/other-signin-node.py) | `ccr.ccs.tencentyun.com/misaka-public/waadri-sign-node` |
+| 下载链接 | [exe下载链接](https://cx-static.waadri.top/download/other-signin-node.exe) | [Python下载链接](https://cx-static.waadri.top/download/other-signin-node.py) | `ccr.ccs.tencentyun.com/misaka-public/waadri-sign-node` |
 
 ## 🎉 搭建教程
 
@@ -75,15 +75,13 @@ uuid: XXX
 1. 安装好 `python3.10+` 环境
 2. 使用以下命令运行，运行后将自动检测并安装运行所需的第三方库
 ```bash
-curl -o "main.py" "https://api.waadri.top/ChaoXing/download/other-signin-node.py"
+wget -O "main.py" "https://cx-static.waadri.top/download/other-signin-node.py"
 python3 main.py
 ```
 3. 将 `node_config.yaml` 中的 `name` 修改为你喜欢的节点名称，除uuid外的其它选项可自行修改也可保持默认。
 4. 再次运行。
 
 ### Docker版教程
-
-#### 使用已构建的镜像
 
 群友构建的镜像 `ccr.ccs.tencentyun.com/misaka-public/waadri-sign-node`（仅支持 `amd64` 和 `arm64`）
 
@@ -100,35 +98,33 @@ docker run -d \
     ccr.ccs.tencentyun.com/misaka-public/waadri-sign-node
 ```
 
-#### 自己构建镜像
-
-1. 构建镜像
-```bash
-curl -o "main.py" "https://api.waadri.top/ChaoXing/download/other-signin-node.py"
-docker build -t your_image_name .
+参考 Docker compose（按需自行修改）
 ```
-
-
-2. 运行
-```bash
-docker run -d \
-    --name=sign-node \
-    -v $(pwd):/data \
-    --restart=always \
-    --dns=223.5.5.5 --dns=114.114.114.114 \
-    your_image_name
+networks:
+    1panel-network:
+        external: true
+        
+services:
+    AutoSign:
+        container_name: ChaoXing-AutoSign
+        image: ccr.ccs.tencentyun.com/misaka-public/waadri-sign-node
+        volumes:
+            - ./data:/data
+        networks:
+            - 1panel-network
+        restart: always
+        env_file:
+            - 1panel.env
 ```
 
 ## 🎉 使用
+![image](https://github.com/user-attachments/assets/a1808fbb-735d-46e1-86a1-67e81a969b9a)
 
 运行上线后可在在线自动签到系统中点击 **其它第三方自选节点**，会自动弹出自选节点列表，选择并输入你设置的密码后即可使用所选节点进行签到监控。
 
-![image](https://github.com/WAADRI/ChaoXing_node_signin/assets/90495619/3f48708a-8e71-4147-8005-c4a266782014)
-
 + 2024/11 目前已有超过50个节点接入了系统，有十余个节点开放使用，欢迎大家继续积极贡献节点资源。
 
-![image](https://github.com/user-attachments/assets/8dda062c-20b9-4a65-a645-b52b8d54503a)
-
+![image](https://github.com/user-attachments/assets/bb4aee50-8ec7-4946-bc4c-0b55ca4a590c)
 
 ### 🎃 注意事项
 - 仅供学习交流，不要用于非法用途
