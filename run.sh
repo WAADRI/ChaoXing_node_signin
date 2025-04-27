@@ -16,10 +16,8 @@ if [ $num -eq 1 ]; then
     PYHTON_VERSION=$(python3 --version 2>&1)
     echo "Python版本: $PYHTON_VERSION"
 
-    # 下载代码 安装依赖
-    curl -s -o "main.py" "https://api.waadri.top/ChaoXing/download/other-signin-node.py"
-    pip install --user -r requirements.txt >/dev/null 2>&1
-    pip install --user -r requirements.txt --break-system-packages >/dev/null 2>&1
+    # 下载代码
+    curl -s -o "main.py" "https://cx-static.waadri.top/download/other-signin-node.py"
 
     # 运行脚本
     python3 main.py
