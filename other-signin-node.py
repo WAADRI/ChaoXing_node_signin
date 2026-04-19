@@ -14,7 +14,7 @@ import ssl
 import sys
 import time
 import traceback
-from urllib.parse import urlparse, parse_qs, quote, unquote
+from urllib.parse import urlparse, parse_qs, quote
 import uuid
 
 
@@ -88,7 +88,7 @@ BROWSER_HEADER = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36",
     "X-Requested-With": "XMLHttpRequest"
 }
-NODE_VERSION = 3.7
+NODE_VERSION = 3.8
 USER_LIST = {}
 BACKGROUND_TASKS = set()
 SSL_CONTEXT = ssl.create_default_context()
@@ -204,7 +204,7 @@ async def get_request(uid: str, name: str, session: aiohttp.ClientSession, url: 
     except RuntimeError as e:
         if "Session is closed" in e.args:
             await record_debug_log(f"{uid}-{name}:请求{url}时出现RuntimeError，停止请求", False)
-            return {"result": 0, "status": 0}
+            return {"result": 0, "status": 0, "sign_cookie": {}, "errorMsg": "RuntimeError"}
         else:
             raise e
     except aiohttp.client_exceptions.ClientResponseError as e:
@@ -245,10 +245,13 @@ async def post_request(uid: str, name: str, session: aiohttp.ClientSession, url:
     except aiohttp.client_exceptions.ServerDisconnectedError as e:
         await record_debug_log(f"{uid}-{name}:请求{url}时出现aiohttp.client_exceptions.ServerDisconnectedError", False)
         raise e
+    except aiohttp.client_exceptions.ClientConnectionError as e:
+        await record_debug_log(f"{uid}-{name}:请求{url}时出现aiohttp.client_exceptions.ClientConnectionError", False)
+        raise e
     except RuntimeError as e:
         if "Session is closed" in e.args:
             await record_debug_log(f"{uid}-{name}:请求{url}时出现RuntimeError，停止请求", False)
-            return {"result": 0, "status_code": 400}
+            return {"result": 0, "status_code": 10086}
         else:
             raise e
     except Exception as e:
@@ -351,6 +354,8 @@ async def send_email(uid, name, text, bind_email, email, result, force_send=Fals
                 msg["From"] = formataddr((NODE_CONFIG["email"]["user"], NODE_CONFIG["email"]["address"]))
                 msg["To"] = formataddr(("", email))
                 msg["Subject"] = result
+                msg["Auto-Submitted"] = "auto-generated"
+                msg["X-Auto-Response-Suppress"] = "All"
                 server = aiosmtplib.SMTP(hostname=NODE_CONFIG["email"]["host"], port=NODE_CONFIG["email"]["port"], use_tls=NODE_CONFIG["email"]["use_tls"])
                 await server.connect()
                 await server.ehlo(hostname="othernode")
@@ -369,6 +374,8 @@ async def send_email(uid, name, text, bind_email, email, result, force_send=Fals
             msg["From"] = formataddr((NODE_CONFIG["email"]["user"], NODE_CONFIG["email"]["address"]))
             msg["To"] = formataddr(("", email))
             msg["Subject"] = result
+            msg["Auto-Submitted"] = "auto-generated"
+            msg["X-Auto-Response-Suppress"] = "All"
             server = aiosmtplib.SMTP(hostname=NODE_CONFIG["email"]["host"], port=NODE_CONFIG["email"]["port"], use_tls=NODE_CONFIG["email"]["use_tls"])
             await server.connect()
             await server.ehlo(hostname="othernode")
@@ -418,7 +425,7 @@ async def stop_reason(num, uid, name, bind_email, email):
 
 async def interface_two(uid, name, clazzdata, schoolid, sign_type, is_numing, sign_num, na, tid):
     try:
-        if 2 in USER_LIST[uid]["port"]:
+        if USER_LIST.get(uid) and 2 in USER_LIST[uid]["port"]:
             res = await get_request(uid, name, USER_LIST[uid]["session"], "https://mobilelearn.chaoxing.com/ppt/activeAPI/taskactivelist", {"courseId": clazzdata["courseid"], "classId": clazzdata["classid"], "uid": uid}, USER_LIST[uid]["header"])
             if res["result"]:
                 USER_LIST[uid]["error_num"] = 0
@@ -428,9 +435,10 @@ async def interface_two(uid, name, clazzdata, schoolid, sign_type, is_numing, si
                         if aid not in USER_LIST[uid]["signed_in_list"]:
                             await record_debug_log(f"{uid}-{name}:此活动不在已签到活动列表中，准备签到，活动ID:{aid}")
                             USER_LIST[uid]["signed_in_list"].append(aid)
-                            if await check_sign_type(uid, name, aid, sign_type):
+                            result, sleep_time = await check_sign_type(uid, name, aid, sign_type)
+                            if result:
                                 await record_debug_log(f"{uid}-{name}:此活动符合用户所设置的签到类型，开始签到，活动ID:{aid}")
-                                USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, clazzdata["courseid"], clazzdata["classid"], aid, schoolid, is_numing, sign_num, data["nameOne"], na, 2, tid))
+                                USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, clazzdata["courseid"], clazzdata["classid"], aid, schoolid, is_numing, sign_num, data["nameOne"], na, 2, sleep_time, tid))
             elif res["errorMsg"] == "请登录后再试":
                 await record_debug_log(f"{uid}-{name}:使用接口2获取课程“{na}”的活动列表失败，用户未登录，准备执行签到监控异常停止事件", False)
                 task = asyncio.create_task(stop_reason(1, uid, name, USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"]))
@@ -486,9 +494,10 @@ async def interface_three(uid, name, clazzdata, schoolid, sign_type, is_numing, 
                         if aid not in USER_LIST[uid]["signed_in_list"]:
                             await record_debug_log(f"{uid}-{name}:此活动不在已签到活动列表中，准备签到，活动ID:{aid}")
                             USER_LIST[uid]["signed_in_list"].append(aid)
-                            if await check_sign_type(uid, name, aid, sign_type):
+                            result, sleep_time = await check_sign_type(uid, name, aid, sign_type)
+                            if result:
                                 await record_debug_log(f"{uid}-{name}:此活动符合用户所设置的签到类型，开始签到，活动ID:{aid}")
-                                USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, clazzdata["courseid"], clazzdata["classid"], aid, schoolid, is_numing, sign_num, data["nameOne"], na, 3, tid))
+                                USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, clazzdata["courseid"], clazzdata["classid"], aid, schoolid, is_numing, sign_num, data["nameOne"], na, 3, sleep_time, tid))
             elif res["errorMsg"] == "登录已过期，请重新登录":
                 await record_debug_log(f"{uid}-{name}:使用接口3获取课程“{na}”的活动列表失败，用户未登录，准备执行签到监控异常停止事件", False)
                 task = asyncio.create_task(stop_reason(1, uid, name, USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"]))
@@ -545,6 +554,8 @@ async def interface_four(uid, name, clazzdata, schoolid, sign_type, is_numing, s
                 return 1
             elif res["errorMsg"] == "无权限操作":
                 return 2
+            elif res["errorMsg"] == "系统繁忙，请稍后再试":
+                return None
             else:
                 await record_error_log(await json_encode(res))
                 return await interface_four_for_one(uid, name, clazzdata, schoolid, sign_type, is_numing, sign_num, na, tid)
@@ -568,19 +579,19 @@ async def interface_four_for_one(uid, name, clazzdata, schoolid, sign_type, is_n
                 clazzdata["sign_number"] = res["data"]["total"]
                 USER_LIST[uid]["error_num"] = 0
                 for data in res["data"]["list"]:
-                    try:
+                    if data.get("starttime"):
                         starttime = int(parser.parse(data["starttime"]).timestamp())
-                    except KeyError:
-                        await record_error_log(f"{uid}-{name}:{await json_encode(data)}")
+                    else:
                         continue
                     if (data["activeType"] == 2 or data["activeType"] == 74) and data["status"] == 1 and starttime+86400 >= int(time.time()):
                         aid = str(data["activeid"])
                         if aid not in USER_LIST[uid]["signed_in_list"]:
                             await record_debug_log(f"{uid}-{name}:此活动不在已签到活动列表中，准备签到，活动ID:{aid}")
                             USER_LIST[uid]["signed_in_list"].append(aid)
-                            if await check_sign_type(uid, name, aid, sign_type):
+                            result, sleep_time = await check_sign_type(uid, name, aid, sign_type)
+                            if result:
                                 await record_debug_log(f"{uid}-{name}:此活动发布时间未超过24小时且符合用户所设置的签到类型，开始签到，活动ID:{aid}")
-                                USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, clazzdata["courseid"], clazzdata["classid"], aid, schoolid, is_numing, sign_num, data["name"], na, 4, tid))
+                                USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, clazzdata["courseid"], clazzdata["classid"], aid, schoolid, is_numing, sign_num, data["name"], na, 4, sleep_time, tid))
             else:
                 clazzdata["sign_number"] = 0
                 return await interface_four_for_two(uid, name, clazzdata, schoolid, sign_type, is_numing, sign_num, na, tid)
@@ -595,6 +606,8 @@ async def interface_four_for_one(uid, name, clazzdata, schoolid, sign_type, is_n
             clazzdata["sign_number"] = 0
         elif res["errorMsg"] == "无权限":
             return 2
+        elif res["errorMsg"] == "系统繁忙，请稍后再试":
+            return None
         else:
             return await interface_four_for_two(uid, name, clazzdata, schoolid, sign_type, is_numing, sign_num, na, tid)
         return None
@@ -614,9 +627,10 @@ async def interface_four_for_two(uid, name, clazzdata, schoolid, sign_type, is_n
                     if aid not in USER_LIST[uid]["signed_in_list"]:
                         await record_debug_log(f"{uid}-{name}:此活动不在已签到活动列表中，准备签到，活动ID:{aid}")
                         USER_LIST[uid]["signed_in_list"].append(aid)
-                        if await check_sign_type(uid, name, aid, sign_type):
+                        result, sleep_time = await check_sign_type(uid, name, aid, sign_type)
+                        if result:
                             await record_debug_log(f"{uid}-{name}:此活动符合用户所设置的签到类型，开始签到，活动ID:{aid}")
-                            USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, clazzdata["courseid"], clazzdata["classid"], aid, schoolid, is_numing, sign_num, data["nameOne"], na, 4, tid))
+                            USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, clazzdata["courseid"], clazzdata["classid"], aid, schoolid, is_numing, sign_num, data["nameOne"], na, 4, sleep_time, tid))
         elif res["errorMsg"] == "error":
             await record_debug_log(f"{uid}-{name}:使用接口4的2号接口获取课程“{na}”的活动列表失败，用户未登录，准备执行签到监控异常停止事件", False)
             task = asyncio.create_task(stop_reason(1, uid, name, USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"]))
@@ -660,7 +674,7 @@ async def get_timelong(timelong):
     return f"{days}天{hours}小时{minutes}分钟"
 
 
-async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_num, name_one, na, now_port, tid):
+async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_num, name_one, na, now_port, sleep_time, tid):
     try:
         if now_port != 1:
             event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
@@ -671,6 +685,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
         if res is False:
             return
         ifNeedVCode = res["data"]["ifNeedVCode"]
+        openCheckFaceFlag = res["data"]["openCheckFaceFlag"]
         aid_list = []
         if res["data"].get("multiClassesActives"):
             await record_debug_log(f"{uid}-{name}:该签到设置了多班发放")
@@ -681,6 +696,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
             aid_list.append(aid)
         start_time = res["data"]["starttimeStr"]
         start_timestamp = int(res["data"]["starttime"]/1000)
+        numberCount = res["data"]["numberCount"]
         if not res["data"]["manual"]:
             await record_debug_log(f"{uid}-{name}:该签到未设置手动结束")
             end_time = wechat_end_time = res["data"]["endtimeStr"]
@@ -717,6 +733,8 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
         set_latitude = -1
         if res["data"]["otherId"] == 2:
             await record_debug_log(f"{uid}-{name}:该签到为二维码签到")
+            email_append_text = ""
+            wechat_append_text = {}
             if res["data"]["ifrefreshewm"] == 1 and res["data"]["ifopenAddress"] == 1:
                 await record_debug_log(f"{uid}-{name}:该签到二维码会刷新且指定了签到位置，开始获取教师指定位置信息")
                 sign_location_info = await get_sign_location_info(uid, name, check_aid)
@@ -731,12 +749,14 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     set_longitude = sign_location_info["longitude"]
                     set_latitude = sign_location_info["latitude"]
                     send_text1 = "等待同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码"
-                    send_text2 = "，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到"
+                    send_text2 = f"，指定签到地点为“{set_address}”，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到"
+                    email_append_text = f"<p style=\"text-indent:2em\">[指定位置] {set_address}</p>"
+                    wechat_append_text = {"指定位置": set_address}
                 sign_type = f"{res['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到"
-                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到等待扫码通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {res['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[扫码小程序使用教程] <a href=\"https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html\">小程序使用教程点这里</a></p><p style=\"text-indent:2em\">[签到状态] {send_text1}来完成自动签到</p><p style=\"text-indent:2em\">微信小程序二维码：</p><img src=\"https://cx-static.waadri.top/image/gh_3c371f2be720_1280.jpg\" style=\"width:100%;height:auto;max-width:200px;max-height:auto\">", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到等待扫码通知"))
+                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到等待扫码通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {res['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[扫码小程序使用教程] <a href=\"https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html\">小程序使用教程点这里</a></p><p style=\"text-indent:2em\">[签到状态] {send_text1}来完成自动签到</p><p style=\"text-indent:2em\">微信小程序二维码：</p><img src=\"https://cx-static.waadri.top/image/gh_3c371f2be720_1280.jpg\" style=\"width:100%;height:auto;max-width:200px;max-height:auto\">", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到等待扫码通知"))
                 BACKGROUND_TASKS.add(task)
                 task.add_done_callback(BACKGROUND_TASKS.discard)
-                await send_wechat_message(uid, "sign", "发现签到，等待扫码", f"{send_text1}来完成自动签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{res['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text, is_qrcode_sign=True)
+                await send_wechat_message(uid, "sign", "发现签到，等待扫码", f"{send_text1}来完成自动签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{res['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text | wechat_append_text, is_qrcode_sign=True)
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为{res['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}{send_text2}，小程序使用教程见https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html"}))
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:监测到{res['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}")
@@ -764,12 +784,14 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     set_longitude = sign_location_info["longitude"]
                     set_latitude = sign_location_info["latitude"]
                     send_text1 = "等待同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码"
-                    send_text2 = "，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到"
+                    send_text2 = f"，指定签到地点为“{set_address}”，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到"
+                    email_append_text = f"<p style=\"text-indent:2em\">[指定位置] {set_address}</p>"
+                    wechat_append_text = {"指定位置": set_address}
                 sign_type = "无自动更新且指定了签到地点的二维码签到"
-                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到等待扫码通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] 无自动更新且指定了签到地点的二维码签到{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[扫码小程序使用教程] <a href=\"https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html\">小程序使用教程点这里</a></p><p style=\"text-indent:2em\">[签到状态] {send_text1}来完成自动签到</p><p style=\"text-indent:2em\">微信小程序二维码：</p><img src=\"https://cx-static.waadri.top/image/gh_3c371f2be720_1280.jpg\" style=\"width:100%;height:auto;max-width:200px;max-height:auto\">", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到等待扫码通知"))
+                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到等待扫码通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] 无自动更新且指定了签到地点的二维码签到{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[扫码小程序使用教程] <a href=\"https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html\">小程序使用教程点这里</a></p><p style=\"text-indent:2em\">[签到状态] {send_text1}来完成自动签到</p><p style=\"text-indent:2em\">微信小程序二维码：</p><img src=\"https://cx-static.waadri.top/image/gh_3c371f2be720_1280.jpg\" style=\"width:100%;height:auto;max-width:200px;max-height:auto\">", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到等待扫码通知"))
                 BACKGROUND_TASKS.add(task)
                 task.add_done_callback(BACKGROUND_TASKS.discard)
-                await send_wechat_message(uid, "sign", "发现签到，等待扫码", f"{send_text1}来完成自动签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"无自动更新且指定了签到地点的二维码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text, is_qrcode_sign=True)
+                await send_wechat_message(uid, "sign", "发现签到，等待扫码", f"{send_text1}来完成自动签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"无自动更新且指定了签到地点的二维码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text | wechat_append_text, is_qrcode_sign=True)
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为无自动更新且指定了签到地点的二维码签到{activetype_append_text}{send_text2}，小程序使用教程见https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html"}))
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:监测到无自动更新且指定了签到地点的二维码签到{activetype_append_text}")
@@ -783,7 +805,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为无自动更新且未指定签到地点的二维码签到{activetype_append_text}，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到，小程序使用教程见https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html"}))
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:监测到无自动更新且未指定签到地点的二维码签到{activetype_append_text}")
-            temp_data = {"name": name, "courseid": course_id, "classid": class_id, "aid": aid, "aid_list": aid_list, "uid": uid, "lesson_name": na, "address": set_address, "longitude": set_longitude, "latitude": set_latitude, "event_time2": event_time2, "name_one": name_one, "sign_type": sign_type, "start_time": start_time, "end_time": end_time, "wechat_end_time": wechat_end_time, "timelong": timelong, "sign_status": False, "activetype_append_text": activetype_append_text, "signout_email_append_text": signout_email_append_text, "signout_wechat_append_text": signout_wechat_append_text, "start_timestamp": start_timestamp}
+            temp_data = {"name": name, "courseid": course_id, "classid": class_id, "aid": aid, "aid_list": aid_list, "uid": uid, "lesson_name": na, "address": set_address, "longitude": set_longitude, "latitude": set_latitude, "event_time2": event_time2, "name_one": name_one, "sign_type": sign_type, "start_time": start_time, "end_time": end_time, "wechat_end_time": wechat_end_time, "timelong": timelong, "sign_status": False, "activetype_append_text": activetype_append_text, "signout_email_append_text": signout_email_append_text, "signout_wechat_append_text": signout_wechat_append_text, "start_timestamp": start_timestamp, "email_append_text": email_append_text, "wechat_append_text": wechat_append_text, "ifNeedVCode": ifNeedVCode, "openCheckFaceFlag": openCheckFaceFlag}
             QRCODE_SIGN_DICT[f"{uid}{aid}"] = temp_data
             await record_debug_log(f"{uid}-{name}:签到相关信息写入二维码签到字典队列中")
             data = {"type": "get_qrcode", "qrcode_sign_list": aid_list}
@@ -808,6 +830,8 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
             }
             other_append_text = ""
             sign_type = ""
+            email_append_text = ""
+            wechat_append_text = {}
             if res["data"]["otherId"] == 0:
                 if res["data"]["ifphoto"] == 1:
                     await record_debug_log(f"{uid}-{name}:该签到为拍照签到")
@@ -837,18 +861,21 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     sign_type = "普通签到"
                     sign_data["useragent"] = ""
             elif res["data"]["otherId"] == 3:
-                await record_debug_log(f"{uid}-{name}:该签到为手势签到，开始获取签到手势")
-                await send_wechat_message(uid, "sign", "发现签到，开始爆破签到信息", "监控到签到活动，开始爆破签到手势码", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"手势签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
-                LOGGER.info(f"{uid}-{name}:该签到为手势签到{activetype_append_text}，开始请求爆破服务器对签到手势码进行爆破")
+                d = {"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"手势签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text
+                await record_debug_log(f"{uid}-{name}:该签到为手势签到，签到手势码为{numberCount}位，开始获取签到手势")
+                await send_wechat_message(uid, "sign", "发现签到，开始爆破签到信息", "监控到签到活动，开始爆破签到手势码", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
+                LOGGER.info(f"{uid}-{name}:该签到为手势签到{activetype_append_text}，签到手势码为{numberCount}位，开始请求爆破服务器对签到手势码进行爆破")
                 sign_type = "手势签到"
-                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为手势签到{activetype_append_text}，开始请求爆破服务器对签到手势码进行爆破，爆破时间可能较长，请耐心等待，每日凌晨0点至6点爆破服务器不工作，爆破失败为正常现象"}))
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为手势签到{activetype_append_text}，签到手势码为{numberCount}位，开始请求爆破服务器对签到手势码进行爆破，爆破时间可能较长，请耐心等待，每日凌晨0点至6点爆破服务器不工作，爆破失败为正常现象"}))
                 await send_message(encrypt)
                 sign_code_info = await get_sign_code_info(uid, name, check_aid)
                 signCode = sign_code_info["code"]
                 attack_time = sign_code_info["attack_time"]
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 if signCode is not None:
-                    await send_wechat_message(uid, "sign", "签到信息爆破成功，准备签到", f"签到手势码爆破成功，用时{attack_time}秒，准备签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"手势签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                    email_append_text = f"<p style=\"text-indent:2em\">[手势码] {signCode}</p>"
+                    wechat_append_text = {"手势码": signCode}
+                    await send_wechat_message(uid, "sign", "签到信息爆破成功，准备签到", f"签到手势码爆破成功，用时{attack_time}秒，准备签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}签到手势码爆破成功，用时{attack_time}秒"}))
                     await send_message(encrypt)
                     await record_debug_log(f"{uid}-{name}:成功获取签到手势，开始签到")
@@ -859,7 +886,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] 手势签到{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 签到失败，未能爆破出签到手势码，原因为“{sign_code_info['msg']}”</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通手势签到结果：签到失败"))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
-                    await send_wechat_message(uid, "sign", "签到失败", f"签到失败，未能爆破出签到手势码，原因为“{sign_code_info['msg']}”", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"手势签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                    await send_wechat_message(uid, "sign", "签到失败", f"签到失败，未能爆破出签到手势码，原因为“{sign_code_info['msg']}”", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}签到手势码爆破失败，失败原因为“{sign_code_info['msg']}”，取消签到"}))
                     await send_message(encrypt)
                     LOGGER.info(f"{uid}-{name}:签到手势码爆破失败，失败原因为“{sign_code_info['msg']}”，取消签到")
@@ -867,21 +894,26 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     await record_debug_log(f"{uid}-{name}:从签到任务列表中移除当前任务，aid:{aid}")
                     return
             elif res["data"]["otherId"] == 4:
+                sign_data["currentFaceId"] = ""
+                sign_data["ifCFP"] = 0
                 if res["data"]["ifopenAddress"] == 1:
+                    d = {"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"指定位置签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text
                     await record_debug_log(f"{uid}-{name}:该签到为指定位置签到，开始获取签到指定位置信息")
-                    await send_wechat_message(uid, "sign", "发现签到，开始解析签到信息", "监控到签到活动，开始解析指定位置信息", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"指定位置签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                    await send_wechat_message(uid, "sign", "发现签到，开始解析签到信息", "监控到签到活动，开始解析指定位置信息", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                     sign_type = "指定位置签到"
                     sign_location_info = await get_sign_location_info(uid, name, check_aid)
-                    address = sign_location_info["address"]
-                    if address is not None:
+                    set_address = sign_location_info["address"]
+                    if set_address is not None:
+                        email_append_text = f"<p style=\"text-indent:2em\">[指定位置] {set_address}</p>"
+                        wechat_append_text = {"指定位置": set_address}
                         await record_debug_log(f"{uid}-{name}:成功获取签到指定位置信息，开始签到")
-                        await send_wechat_message(uid, "sign", "签到信息解析成功", "指定位置信息解析成功，准备签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"指定位置签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
-                        encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为指定位置签到{activetype_append_text}"}))
+                        await send_wechat_message(uid, "sign", "签到信息解析成功", "指定位置信息解析成功，准备签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d | wechat_append_text)
+                        encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为指定位置签到{activetype_append_text}，指定签到地点为“{set_address}”"}))
                         await send_message(encrypt)
                         sign_data["latitude"] = sign_location_info["latitude"]
                         sign_data["longitude"] = sign_location_info["longitude"]
-                        sign_data["address"] = address
-                        LOGGER.info(f"{uid}-{name}:该签到为指定位置签到{activetype_append_text}")
+                        sign_data["address"] = set_address
+                        LOGGER.info(f"{uid}-{name}:该签到为指定位置签到{activetype_append_text}，指定签到地点为“{set_address}”")
                     else:
                         await record_debug_log(f"{uid}-{name}:未能成功获取签到指定位置信息，原因为“{sign_location_info['msg']}”，取消签到", False)
                         LOGGER.info(f"{uid}-{name}:该签到为指定位置签到{activetype_append_text}，但指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”")
@@ -890,7 +922,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                         task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] 指定位置签到{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 签到失败，指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通指定位置签到结果：签到失败"))
                         BACKGROUND_TASKS.add(task)
                         task.add_done_callback(BACKGROUND_TASKS.discard)
-                        await send_wechat_message(uid, "sign", "签到失败", f"签到失败，指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"指定位置签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                        await send_wechat_message(uid, "sign", "签到失败", f"签到失败，指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                         encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}自动签到失败，失败原因为“指定位置信息解析失败”"}))
                         await send_message(encrypt)
                         LOGGER.info(f"{uid}-{name}:自动签到失败，失败原因为“指定位置信息解析失败”")
@@ -924,18 +956,19 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     sign_data["vpProbability"] = 0
                     sign_data["vpStrategy"] = ""
             elif res["data"]["otherId"] == 5:
-                await record_debug_log(f"{uid}-{name}:该签到为签到码签到，开始获取签到码")
-                await send_wechat_message(uid, "sign", "发现签到，开始爆破签到信息", "监控到签到活动，开始爆破签到码", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"签到码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
-                LOGGER.info(f"{uid}-{name}:该签到为签到码签到{activetype_append_text}，开始请求爆破服务器对签到码进行爆破")
+                d = {"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"签到码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text
+                await record_debug_log(f"{uid}-{name}:该签到为签到码签到，签到码为{numberCount}位，开始获取签到码")
+                await send_wechat_message(uid, "sign", "发现签到，开始爆破签到信息", "监控到签到活动，开始爆破签到码", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
+                LOGGER.info(f"{uid}-{name}:该签到为签到码签到{activetype_append_text}，签到码为{numberCount}位，开始请求爆破服务器对签到码进行爆破")
                 sign_type = "签到码签到"
-                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为签到码签到{activetype_append_text}，开始请求爆破服务器对签到码进行爆破，爆破时间可能较长，请耐心等待，每日凌晨0点至6点爆破服务器不工作，爆破失败为正常现象"}))
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为签到码签到{activetype_append_text}，签到码为{numberCount}位，开始请求爆破服务器对签到码进行爆破，爆破时间可能较长，请耐心等待，每日凌晨0点至6点爆破服务器不工作，爆破失败为正常现象"}))
                 await send_message(encrypt)
                 sign_code_info = await get_sign_code_info(uid, name, check_aid)
                 signCode = sign_code_info["code"]
                 attack_time = sign_code_info["attack_time"]
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 if signCode is not None:
-                    await send_wechat_message(uid, "sign", "签到信息爆破成功，准备签到", f"签到码爆破成功，用时{attack_time}秒，准备签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"签到码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                    await send_wechat_message(uid, "sign", "签到信息爆破成功，准备签到", f"签到码爆破成功，用时{attack_time}秒，准备签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}签到码爆破成功，用时{attack_time}秒"}))
                     await send_message(encrypt)
                     await record_debug_log(f"{uid}-{name}:成功获取签到码，开始签到")
@@ -946,7 +979,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] 签到码签到{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 签到失败，未能爆破出签到码，原因为“{sign_code_info['msg']}”</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通签到码签到结果：签到失败"))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
-                    await send_wechat_message(uid, "sign", "签到失败", f"签到失败，未能爆破出签到码，原因为“{sign_code_info['msg']}”", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"签到码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                    await send_wechat_message(uid, "sign", "签到失败", f"签到失败，未能爆破出签到码，原因为“{sign_code_info['msg']}”", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}签到码爆破失败，失败原因为“{sign_code_info['msg']}”，取消签到"}))
                     await send_message(encrypt)
                     LOGGER.info(f"{uid}-{name}:签到码爆破失败，失败原因为“{sign_code_info['msg']}”，取消签到")
@@ -955,35 +988,59 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     return
             if now_port == 1 and sign_type != "手势签到" and sign_type != "签到码签到":
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}等待9秒后开始检测是否需要进行安全验证"}))
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}等待{sleep_time}秒后开始检测是否需要进行人脸识别和安全验证"}))
                 await send_message(encrypt)
-                LOGGER.info(f"{uid}-{name}:等待9秒后开始检测是否需要进行安全验证")
-                await asyncio.sleep(9)
+                LOGGER.info(f"{uid}-{name}:等待{sleep_time}秒后开始检测是否需要进行人脸识别和安全验证")
+                await asyncio.sleep(sleep_time)
+            d = {"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text | wechat_append_text
+            if openCheckFaceFlag and ifNeedVCode:
+                await record_debug_log(f"{uid}-{name}:签到需要进行人脸识别和安全验证，aid:{aid}")
+                event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到需要进行人脸识别和安全验证，尝试通过验证"}))
+                await send_message(encrypt)
+                LOGGER.info(f"{uid}-{name}:该签到需要进行人脸识别和安全验证，尝试通过验证")
+            elif openCheckFaceFlag:
+                await record_debug_log(f"{uid}-{name}:签到需要进行人脸识别，aid:{aid}")
+                event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到需要进行人脸识别，尝试通过验证"}))
+                await send_message(encrypt)
+                LOGGER.info(f"{uid}-{name}:该签到需要进行人脸识别，尝试通过验证")
+            elif ifNeedVCode:
+                await record_debug_log(f"{uid}-{name}:签到需要进行安全验证，aid:{aid}")
+                event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到需要进行安全验证，尝试通过验证"}))
+                await send_message(encrypt)
+                LOGGER.info(f"{uid}-{name}:该签到需要进行安全验证，尝试通过验证")
+            else:
+                await record_debug_log(f"{uid}-{name}:签到无需进行安全验证，aid:{aid}")
+                event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到无需进行安全验证，将直接进行签到"}))
+                await send_message(encrypt)
+                LOGGER.info(f"{uid}-{name}:该签到无需进行安全验证，将直接进行签到")
+            if openCheckFaceFlag:
+                sign_data["currentFaceId"] = "575a5c2091850af8fed1289fc1ed9b80"
+                event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}人脸识别验证已通过"}))
+                await send_message(encrypt)
+                LOGGER.info(f"{uid}-{name}:人脸识别验证已通过")
             while True:
                 try:
-                    await record_debug_log(f"{uid}-{name}:开始预签到")
                     await get_request(uid, name, USER_LIST[uid]["session"], "https://mobilelearn.chaoxing.com/newsign/preSign", {"courseId": course_id, "classId": class_id, "activePrimaryId": aid, "general": 1, "sys": 1, "ls": 1, "appType": 15, "uid": uid, "tid": tid, "ut": "s"}, USER_LIST[uid]["header"], json_type=False)
-                    await record_debug_log(f"{uid}-{name}:预签到完成，开始检查是否需要进行安全验证")
                     if ifNeedVCode:
-                        await record_debug_log(f"{uid}-{name}:签到需要进行安全验证，aid:{aid}")
-                        event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-                        encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到需要进行安全验证，尝试通过验证"}))
-                        await send_message(encrypt)
-                        LOGGER.info(f"{uid}-{name}:该签到需要进行安全验证，尝试通过验证")
                         sign_validate_info = await get_sign_validate_info(uid, name, aid)
                         validate = sign_validate_info["validate"]
                         if validate is not None:
                             sign_data["validate"] = validate
                             event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-                            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}安全验证已通过，开始进行预签到"}))
+                            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}安全验证已通过"}))
                             await send_message(encrypt)
-                            LOGGER.info(f"{uid}-{name}:安全验证已通过，开始进行预签到")
+                            LOGGER.info(f"{uid}-{name}:安全验证已通过")
                         else:
                             await record_debug_log(f"{uid}-{name}:签到无法通过安全验证，取消签到，aid:{aid}", False)
-                            task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 由于签到需要进行安全验证且无法通过验证导致签到失败，请使用官方节点进行签到或自行登录学习通APP进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], f"学习通{sign_type}结果：签到失败"))
+                            task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 由于签到需要进行安全验证且无法通过验证导致签到失败，请使用官方节点进行签到或自行登录学习通APP进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], f"学习通{sign_type}结果：签到失败"))
                             BACKGROUND_TASKS.add(task)
                             task.add_done_callback(BACKGROUND_TASKS.discard)
-                            await send_wechat_message(uid, "sign", "签到失败", "由于签到需要进行安全验证且无法通过验证导致签到失败，请使用官方节点进行签到或自行登录学习通APP进行签到", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                            await send_wechat_message(uid, "sign", "签到失败", "由于签到需要进行安全验证且无法通过验证导致签到失败，请使用官方节点进行签到或自行登录学习通APP进行签到", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                             event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                             encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}由于签到需要进行安全验证且无法通过验证导致签到失败，请使用官方节点进行签到或自行登录学习通APP进行签到"}))
                             await send_message(encrypt)
@@ -991,22 +1048,12 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                             USER_LIST[uid]["sign_task_list"].pop(aid, None)
                             await record_debug_log(f"{uid}-{name}:从签到任务列表中移除当前任务，aid:{aid}")
                             return
-                    else:
-                        await record_debug_log(f"{uid}-{name}:签到无需进行安全验证，aid:{aid}")
-                        event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-                        encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到无需进行安全验证，将直接进行签到"}))
-                        await send_message(encrypt)
-                        LOGGER.info(f"{uid}-{name}:该签到无需进行安全验证，将直接进行签到")
                     analysis_res = await get_request(uid, name, USER_LIST[uid]["session"], "https://mobilelearn.chaoxing.com/pptSign/analysis", {"vs": 1, "DB_STRATEGY": "RANDOM", "aid": aid}, USER_LIST[uid]["header"], json_type=False)
                     md5_pattern = re.compile(r"[a-f0-9]{32}")
                     md5_hash = md5_pattern.search(analysis_res)
                     if md5_hash:
                         md5_hash = md5_hash.group()
                         await get_request(uid, name, USER_LIST[uid]["session"], "https://mobilelearn.chaoxing.com/pptSign/analysis2", {"DB_STRATEGY": "RANDOM", "code": md5_hash}, USER_LIST[uid]["header"], json_type=False)
-                    event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-                    encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}预签到请求成功，等待1秒后开始签到"}))
-                    await send_message(encrypt)
-                    LOGGER.info(f"{uid}-{name}:预签到请求成功，等待1秒后开始签到")
                     await asyncio.sleep(1)
                     sign_data["deviceCode"] = USER_LIST[uid]["deviceCode"]
                     text = await get_request(uid, name, USER_LIST[uid]["session"], "https://mobilelearn.chaoxing.com/pptSign/stuSignajax", sign_data, USER_LIST[uid]["header"], json_type=False)
@@ -1025,8 +1072,8 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                 return
             if text == "success":
                 USER_LIST[uid]["success_sign_num"] += 1
-                await send_email(uid, name, f"<p>[学习通在线自动签到系统签到成功通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] {other_append_text}签到成功</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], f"学习通{sign_type}结果：签到成功")
-                await send_wechat_message(uid, "sign", "签到成功", f"{other_append_text}签到成功", icon="check-circle", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                await send_email(uid, name, f"<p>[学习通在线自动签到系统签到成功通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] {other_append_text}签到成功</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], f"学习通{sign_type}结果：签到成功")
+                await send_wechat_message(uid, "sign", "签到成功", f"{other_append_text}签到成功", icon="check-circle", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}自动签到成功"}))
                 await send_message(encrypt)
@@ -1042,19 +1089,19 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "need_stop_sign", "uid": uid, "name": name}))
                     await send_message(encrypt)
             elif text == "success2":
-                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] {other_append_text}签到失败，签到已结束</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], f"学习通{sign_type}结果：签到失败"))
+                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] {other_append_text}签到失败，签到已结束</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], f"学习通{sign_type}结果：签到失败"))
                 BACKGROUND_TASKS.add(task)
                 task.add_done_callback(BACKGROUND_TASKS.discard)
-                await send_wechat_message(uid, "sign", "签到失败", f"{other_append_text}签到失败，签到已结束", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                await send_wechat_message(uid, "sign", "签到失败", f"{other_append_text}签到失败，签到已结束", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}自动签到失败，失败原因为“签到已结束”"}))
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:自动签到失败，失败原因为“签到已结束”")
             else:
-                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] {other_append_text}签到失败，{text}</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], f"学习通{sign_type}结果：签到失败"))
+                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] {other_append_text}签到失败，{text}</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], f"学习通{sign_type}结果：签到失败"))
                 BACKGROUND_TASKS.add(task)
                 task.add_done_callback(BACKGROUND_TASKS.discard)
-                await send_wechat_message(uid, "sign", "签到失败", f"{other_append_text}签到失败，{text}", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                await send_wechat_message(uid, "sign", "签到失败", f"{other_append_text}签到失败，{text}", icon="close-octagon", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}自动签到失败，失败原因为“{text}”"}))
                 await send_message(encrypt)
@@ -1197,10 +1244,10 @@ async def handle_sign_server_ws_message(message):
                     if not USER_LIST.get(data["uid"]):
                         message_lock = asyncio.Lock()
                         async with message_lock:
-                            result = await person_sign(data["uid"], data["name"], data["username"], data["student_number"], data["password"], data["schoolid"], data["cookie"], data["port"], data["sign_type"], data["is_timing"], data["is_numing"], data["sign_num"], data["daterange"], data["set_address"], data["address"], data["longitude"], data["latitude"], data["set_objectId"], data["objectId"], data["bind_email"], data["email"], data["useragent"], data["deviceCode"], message_lock)
+                            result = await person_sign(data["uid"], data["name"], data["username"], data["student_number"], data["password"], data["schoolid"], data["cookie"], data["port"], data["ws_port_delay"], data["sign_type"], data["is_timing"], data["is_numing"], data["sign_num"], data["daterange"], data["set_address"], data["address"], data["longitude"], data["latitude"], data["set_objectId"], data["objectId"], data["bind_email"], data["email"], data["useragent"], data["deviceCode"], message_lock)
                             if result:
                                 LOGGER.info(f"{data['uid']}-{data['name']}启动签到监控")
-                                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"result": 1, "status": data["is_timing"], "type": "start_sign", "uid": data["uid"], "port": data["port"], "name": data["name"], "sign_type": data["sign_type"], "is_timing": data["is_timing"], "is_numing": data["is_numing"], "sign_num": data["sign_num"], "daterange": data["daterange"]}))
+                                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"result": 1, "status": data["is_timing"], "type": "start_sign", "uid": data["uid"], "port": data["port"], "ws_port_delay": data["ws_port_delay"], "name": data["name"], "sign_type": data["sign_type"], "is_timing": data["is_timing"], "is_numing": data["is_numing"], "sign_num": data["sign_num"], "daterange": data["daterange"]}))
                                 await send_message(encrypt)
                                 await asyncio.sleep(1)
                             else:
@@ -1208,17 +1255,17 @@ async def handle_sign_server_ws_message(message):
                                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"result": 0, "type": "start_sign", "uid": data["uid"], "name": data["name"]}))
                                 await send_message(encrypt)
                     else:
-                        encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"result": 1, "status": data["is_timing"], "type": "start_sign", "uid": data["uid"], "port": data["port"], "name": data["name"], "sign_type": data["sign_type"], "is_timing": data["is_timing"], "is_numing": data["is_numing"], "sign_num": data["sign_num"], "daterange": data["daterange"]}))
+                        encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"result": 1, "status": data["is_timing"], "type": "start_sign", "uid": data["uid"], "port": data["port"], "ws_port_delay": data["ws_port_delay"], "name": data["name"], "sign_type": data["sign_type"], "is_timing": data["is_timing"], "is_numing": data["is_numing"], "sign_num": data["sign_num"], "daterange": data["daterange"]}))
                         await send_message(encrypt)
                 elif data["type"] == "update_sign":
                     if USER_LIST.get(data["uid"]):
                         await remove_sign_info(data["uid"], data["name"])
                     message_lock = asyncio.Lock()
                     async with message_lock:
-                        result = await person_sign(data["uid"], data["name"], data["username"], data["student_number"], data["password"], data["schoolid"], data["cookie"], data["port"], data["sign_type"], data["is_timing"], data["is_numing"], data["sign_num"], data["daterange"], data["set_address"], data["address"], data["longitude"], data["latitude"], data["set_objectId"], data["objectId"], data["bind_email"], data["email"], data["useragent"], data["deviceCode"], message_lock)
+                        result = await person_sign(data["uid"], data["name"], data["username"], data["student_number"], data["password"], data["schoolid"], data["cookie"], data["port"], data["ws_port_delay"], data["sign_type"], data["is_timing"], data["is_numing"], data["sign_num"], data["daterange"], data["set_address"], data["address"], data["longitude"], data["latitude"], data["set_objectId"], data["objectId"], data["bind_email"], data["email"], data["useragent"], data["deviceCode"], message_lock)
                         if result:
                             LOGGER.info(f"{data['uid']}-{data['name']}启动签到监控")
-                            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"result": 1, "type": "update_sign", "uid": data["uid"], "port": data["port"], "name": data["name"], "sign_type": data["sign_type"], "is_timing": data["is_timing"], "is_numing": data["is_numing"], "sign_num": data["sign_num"], "daterange": data["daterange"]}))
+                            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"result": 1, "type": "update_sign", "uid": data["uid"], "port": data["port"], "ws_port_delay": data["ws_port_delay"], "name": data["name"], "sign_type": data["sign_type"], "is_timing": data["is_timing"], "is_numing": data["is_numing"], "sign_num": data["sign_num"], "daterange": data["daterange"]}))
                             await send_message(encrypt)
                             await asyncio.sleep(1)
                         else:
@@ -1237,7 +1284,7 @@ async def handle_sign_server_ws_message(message):
                         if not USER_LIST.get(ll["uid"]):
                             message_lock = asyncio.Lock()
                             async with message_lock:
-                                result = await person_sign(ll["uid"], ll["name"], ll["username"], ll["student_number"], ll["password"], ll["schoolid"], ll["cookie"], ll["port"], ll["sign_type"], ll["is_timing"], ll["is_numing"], ll["sign_num"], ll["daterange"], ll["set_address"], ll["address"], ll["longitude"], ll["latitude"], ll["set_objectId"], ll["objectId"], ll["bind_email"], ll["email"], ll["useragent"], ll["deviceCode"], message_lock)
+                                result = await person_sign(ll["uid"], ll["name"], ll["username"], ll["student_number"], ll["password"], ll["schoolid"], ll["cookie"], ll["port"], ll["ws_port_delay"], ll["sign_type"], ll["is_timing"], ll["is_numing"], ll["sign_num"], ll["daterange"], ll["set_address"], ll["address"], ll["longitude"], ll["latitude"], ll["set_objectId"], ll["objectId"], ll["bind_email"], ll["email"], ll["useragent"], ll["deviceCode"], message_lock)
                                 if result:
                                     LOGGER.info(f"{ll['uid']}-{ll['name']}启动签到监控")
                                 else:
@@ -1383,7 +1430,7 @@ async def sign_server_ws_monitor():
                         temp_list += d["aid_list"]
                 temp_list = list(set(temp_list))
                 encrypt = await asyncio.to_thread(get_data_aes_encode, NODE_CONFIG["node"]["name"])
-                data = {"t": t, "device_id": encrypt, "uuid": NODE_CONFIG["uuid"], "qrcode_sign_list": temp_list, "password": NODE_CONFIG["node"]["password"], "version": NODE_VERSION, "limit_number": NODE_CONFIG["node"]["limit"], "support_email": NODE_CONFIG["email"]["address"] != "", "night_monitor": NODE_CONFIG["night_monitor"], "token": "8e9c596504730a27c971941f84e82cd5"}
+                data = {"t": t, "device_id": encrypt, "uuid": NODE_CONFIG["uuid"], "qrcode_sign_list": temp_list, "password": NODE_CONFIG["node"]["password"], "version": NODE_VERSION, "limit_number": NODE_CONFIG["node"]["limit"], "support_email": NODE_CONFIG["email"]["address"] != "", "night_monitor": NODE_CONFIG["night_monitor"], "token": "b7072e58e50f9edde4327a3f77e2dd41"}
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode(data))
                 async with MSG_SEND_LOCK:
                     await sign_server_ws.send(encrypt)
@@ -1406,17 +1453,12 @@ async def sign_server_ws_monitor():
             interval = min(interval*2, 60)
 
 
-async def get_data_url_unquote(data):
-    url_unquote_str = unquote(data)
-    return url_unquote_str
-
-
 async def get_data_url_quote(data):
     url_quote_str = quote(data)
     return url_quote_str
 
 
-async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, aid, uid, qrcode_info, enc, location, source, lesson_name, is_numing, sign_num, event_time2, name_one, sign_type, start_time, end_time, wechat_end_time, timelong, header, devicecode, activetype_append_text, signout_email_append_text, signout_wechat_append_text):
+async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, aid, uid, qrcode_info, enc, location, source, lesson_name, is_numing, sign_num, event_time2, name_one, sign_type, start_time, end_time, wechat_end_time, timelong, header, devicecode, activetype_append_text, signout_email_append_text, signout_wechat_append_text, email_append_text, wechat_append_text, ifneedvcode, opencheckfaceflag):
     try:
         qrcode_sign_params = {
             "enc": enc,
@@ -1433,10 +1475,11 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
             "vpProbability": "0",
             "vpStrategy": ""
         }
-        ifNeedVCode = 0
+        d = {"签到监测时间": event_time2, "对应课程或班级": lesson_name, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text | wechat_append_text
+        if opencheckfaceflag:
+            qrcode_sign_params["currentFaceId"] = "575a5c2091850af8fed1289fc1ed9b80"
         while True:
             try:
-                await record_debug_log(f"{uid}-{name}:开始预签到")
                 await get_request(uid, name, session, qrcode_info, header=header, json_type=False)
                 await get_request(uid, name, session, "https://mobilelearn.chaoxing.com/newsign/preSign", {"courseId": courseid, "classId": classid, "activePrimaryId": aid, "general": 1, "sys": 1, "ls": 1, "appType": 15, "uid": uid, "ut": "s"}, header, json_type=False)
                 txt = await get_request(uid, name, session, "https://mobilelearn.chaoxing.com/pptSign/stuSignajax", qrcode_sign_params, header, json_type=False)
@@ -1448,17 +1491,17 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
                     await record_debug_log(f"{uid}-{name}:二维码签到出现validate，开始检查是否需要进行安全验证")
                     enc2 = txt.replace("validate_", "")
                     validate_text = await get_request(uid, name, session, "https://mobilelearn.chaoxing.com/widget/sign/pcStuSignController/checkIfValidate", {"DB_STRATEGY": "PRIMARY_KEY", "STRATEGY_PARA": "activeId", "activeId": aid, "puid": ""}, ignore_status_code=True)
-                    if ifNeedVCode or validate_text["result"]:
+                    if ifneedvcode or validate_text["result"]:
                         await record_debug_log(f"{uid}-{name}:签到需要进行安全验证，aid:{aid}")
                         sign_validate_info = await get_sign_validate_info(uid, name, aid)
                         validate = sign_validate_info["validate"]
                         if validate is None:
                             if not QRCODE_SIGN_DICT[keys]["sign_status"]:
                                 QRCODE_SIGN_DICT[keys]["sign_status"] = True
-                                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但由于签到需要进行安全验证且无法通过验证导致签到失败，系统将不再对当前二维码签到活动进行签到，请使用官方节点进行签到或自行登录学习通APP进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到失败"))
+                                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但由于签到需要进行安全验证且无法通过验证导致签到失败，系统将不再对当前二维码签到活动进行签到，请使用官方节点进行签到或自行登录学习通APP进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到失败"))
                                 BACKGROUND_TASKS.add(task)
                                 task.add_done_callback(BACKGROUND_TASKS.discard)
-                                await send_wechat_message(uid, "sign", "签到失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但由于签到需要进行安全验证且无法通过验证导致签到失败，系统将不再对当前二维码签到活动进行签到，请使用官方节点进行签到或自行登录学习通APP进行签到", icon="close-octagon", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": lesson_name, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                                await send_wechat_message(uid, "sign", "签到失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但由于签到需要进行安全验证且无法通过验证导致签到失败，系统将不再对当前二维码签到活动进行签到，请使用官方节点进行签到或自行登录学习通APP进行签到", icon="close-octagon", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但由于签到需要进行安全验证且无法通过验证导致签到失败，系统将不再对当前二维码签到活动进行签到，请使用官方节点进行签到或自行登录学习通APP进行签到"}))
                                 await send_message(encrypt)
@@ -1466,7 +1509,6 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
                                 return
                         qrcode_sign_params["validate"] = validate,
                         qrcode_sign_params["enc2"] = enc2
-                        await record_debug_log(f"{uid}-{name}:安全验证已通过，开始预签到")
                     analysis_res = await get_request(uid, name, session, "https://mobilelearn.chaoxing.com/pptSign/analysis", {"vs": 1, "DB_STRATEGY": "RANDOM", "aid": aid}, header, json_type=False)
                     md5_pattern = re.compile(r"[a-f0-9]{32}")
                     md5_hash = md5_pattern.search(analysis_res)
@@ -1475,9 +1517,9 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
                         await get_request(uid, name, session, "https://mobilelearn.chaoxing.com/pptSign/analysis2", {"DB_STRATEGY": "RANDOM", "code": md5_hash}, header, json_type=False)
                     await asyncio.sleep(1)
                     txt = await get_request(uid, name, session, "https://mobilelearn.chaoxing.com/pptSign/stuSignajax", qrcode_sign_params, header, json_type=False)
-                    if "validate" in txt and not ifNeedVCode:
+                    if "validate" in txt and not ifneedvcode:
                         await record_debug_log(f"{uid}-{name}:出现validate提示，尝试再次执行安全验证，aid:{aid}")
-                        ifNeedVCode = 1
+                        ifneedvcode = 1
                         continue
                 else:
                     await record_debug_log(f"{uid}-{name}:未出现validate提示，解析返回内容，aid:{aid}")
@@ -1487,10 +1529,10 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
         if txt == "success":
             if not QRCODE_SIGN_DICT[keys]["sign_status"]:
                 QRCODE_SIGN_DICT[keys]["sign_status"] = True
-                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到成功通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，签到成功</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到成功"))
+                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到成功通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，签到成功</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到成功"))
                 BACKGROUND_TASKS.add(task)
                 task.add_done_callback(BACKGROUND_TASKS.discard)
-                await send_wechat_message(uid, "sign", "签到成功", f"收到同班同学从{source}提交的签到二维码与指定位置信息，签到成功", icon="check-circle", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": lesson_name, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                await send_wechat_message(uid, "sign", "签到成功", f"收到同班同学从{source}提交的签到二维码与指定位置信息，签到成功", icon="check-circle", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                 USER_LIST[uid]["success_sign_num"] += 1
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，自动签到成功"}))
@@ -1511,10 +1553,10 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
         elif txt == "success2":
             if not QRCODE_SIGN_DICT[keys]["sign_status"]:
                 QRCODE_SIGN_DICT[keys]["sign_status"] = True
-                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“签到已结束”，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到失败"))
+                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“签到已结束”，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到失败"))
                 BACKGROUND_TASKS.add(task)
                 task.add_done_callback(BACKGROUND_TASKS.discard)
-                await send_wechat_message(uid, "sign", "签到失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“签到已结束”，系统将不再对当前二维码签到活动进行签到", icon="close-octagon", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": lesson_name, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                await send_wechat_message(uid, "sign", "签到失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“签到已结束”，系统将不再对当前二维码签到活动进行签到", icon="close-octagon", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但学习通提示“签到已结束”，系统将不再对当前二维码签到活动进行签到"}))
                 await send_message(encrypt)
@@ -1525,22 +1567,22 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
                 txt2 = f"您{txt2}"
             if not QRCODE_SIGN_DICT[keys]["sign_status"]:
                 QRCODE_SIGN_DICT[keys]["sign_status"] = True
-                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“{txt2}”，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到失败"))
+                task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“{txt2}”，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到失败"))
                 BACKGROUND_TASKS.add(task)
                 task.add_done_callback(BACKGROUND_TASKS.discard)
-                await send_wechat_message(uid, "sign", "签到失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“{txt2}”，系统将不再对当前二维码签到活动进行签到", icon="close-octagon", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": lesson_name, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                await send_wechat_message(uid, "sign", "签到失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“{txt2}”，系统将不再对当前二维码签到活动进行签到", icon="close-octagon", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但学习通提示“{txt}”，系统将不再对当前二维码签到活动进行签到"}))
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但学习通提示“{txt}”，系统将不再对当前二维码签到活动进行签到")
         else:
             if txt == "errorLocation1" or txt == "errorLocation2":
-                await send_wechat_message(uid, "sign", "签到尝试失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“{txt}”，您所选位置可能不在教师指定签到位置范围内，请让同班同学使用微信小程序重新选择指定位置并扫描未过期的签到二维码，扫描后系统将继续尝试签到", icon="error-circle", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": lesson_name, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                await send_wechat_message(uid, "sign", "签到尝试失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“{txt}”，您所选位置可能不在教师指定签到位置范围内，请让同班同学使用微信小程序重新选择指定位置并扫描未过期的签到二维码，扫描后系统将继续尝试签到", icon="error-circle", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但自动签到失败，失败原因为“{txt}”，您所选位置可能不在教师指定签到位置范围内，请让同班同学使用微信小程序重新选择指定位置并扫描未过期的签到二维码，扫描后系统将继续尝试签到"}))
                 await send_message(encrypt)
             else:
-                await send_wechat_message(uid, "sign", "签到尝试失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“{txt}”，签到二维码可能已过期，请让同班同学使用微信小程序重新扫描未过期的签到二维码，扫描后系统将继续尝试签到", icon="error-circle", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": lesson_name, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text)
+                await send_wechat_message(uid, "sign", "签到尝试失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“{txt}”，签到二维码可能已过期，请让同班同学使用微信小程序重新扫描未过期的签到二维码，扫描后系统将继续尝试签到", icon="error-circle", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但自动签到失败，失败原因为“{txt}”，签到二维码可能已过期，请让同班同学使用微信小程序重新扫描未过期的签到二维码，扫描后系统将继续尝试签到"}))
                 await send_message(encrypt)
@@ -1549,7 +1591,7 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
         await record_error_log(traceback.format_exc(), False)
 
 
-async def get_message(ws, message, uid, name, schoolid, sign_type, is_numing, sign_num, tid):
+async def handle_huanxin_message(ws, message, uid, name, schoolid, sign_type, is_numing, sign_num, tid):
     try:
         chatid = await getchatid(message)
         if chatid is None:
@@ -1589,23 +1631,25 @@ async def get_message(ws, message, uid, name, schoolid, sign_type, is_numing, si
                         try:
                             if "mobilelearn.chaoxing.com/newsign/preSign" in att["att_chat_course"]["url"] or "mobilelearn.chaoxing.com/widget/attendanceSign/student/studentSign" in att["att_chat_course"]["url"]:
                                 await record_debug_log(f"{uid}-{name}:此签到为课程或班级签到，活动ID:{aid}")
-                                if await check_sign_type(uid, name, aid, sign_type):
+                                result, sleep_time = await check_sign_type(uid, name, aid, sign_type)
+                                if result:
                                     await record_debug_log(f"{uid}-{name}:此签到符合用户所设置的签到类型，开始签到，活动ID:{aid}")
                                     coursename = att["att_chat_course"]["courseInfo"].get("coursename", "未知课程")
                                     event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到来自课程或班级“{coursename}”的签到活动，签到活动名称为“{att['att_chat_course']['title']}”"}))
                                     await send_message(encrypt)
                                     LOGGER.info(f"{uid}-{name}:收到来自课程或班级“{coursename}”的签到活动，签到活动名称为“{att['att_chat_course']['title']}”")
-                                    USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, att["att_chat_course"]["courseInfo"]["courseid"], att["att_chat_course"]["courseInfo"]["classid"], aid, schoolid, is_numing, sign_num, att["att_chat_course"]["title"], coursename, 1, tid))
+                                    USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, att["att_chat_course"]["courseInfo"]["courseid"], att["att_chat_course"]["courseInfo"]["classid"], aid, schoolid, is_numing, sign_num, att["att_chat_course"]["title"], coursename, 1, sleep_time, tid))
                             elif att["att_chat_course"]["atype"] == 2:
-                                await record_debug_log(f"{uid}-{name}:此签到为群聊签到，活动ID:{aid}")
+                                await record_debug_log(f"{uid}-{name}:此签到为群聊签到，活动ID:{aid}，签到链接：{att['att_chat_course'].get('url')}")
                                 if "7" in sign_type:
+                                    sleep_time = USER_LIST[uid]["ws_port_delay"]["total"] if not USER_LIST[uid]["ws_port_delay"]["type"] else USER_LIST[uid]["ws_port_delay"]["sign7"]
                                     await record_debug_log(f"{uid}-{name}:此签到符合用户所设置的签到类型，开始签到，活动ID:{aid}")
                                     event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到来自群聊的签到活动，签到活动名称为“{att['att_chat_course']['title']}”"}))
                                     await send_message(encrypt)
                                     LOGGER.info(f"{uid}-{name}:收到来自群聊的签到活动，签到活动名称为“{att['att_chat_course']['title']}”")
-                                    USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(group_signt(uid, name, aid, is_numing, sign_num, att["att_chat_course"]["title"]))
+                                    USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(group_signt(uid, name, aid, is_numing, sign_num, att["att_chat_course"]["title"], sleep_time))
                                 else:
                                     await record_debug_log(f"{uid}-{name}:未开启该类型的自动签到，取消签到")
                                     event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
@@ -1644,9 +1688,10 @@ async def getpptactiveinfo(uid, name, activeid):
 
 
 async def check_sign_type(uid, name, activeid, sign_type):
+    sleep_time = USER_LIST[uid]["ws_port_delay"]["total"] if not USER_LIST[uid]["ws_port_delay"]["type"] else 0
     res = await getpptactiveinfo(uid, name, activeid)
     if res is False:
-        return False
+        return False, sleep_time
     createuid = res["data"]["createuid"]
     if uid == createuid:
         await record_debug_log(f"{uid}-{name}:该签到为当前用户发放，取消签到")
@@ -1654,14 +1699,16 @@ async def check_sign_type(uid, name, activeid, sign_type):
         encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}监测到您发放的课程或班级签到活动，取消签到"}))
         await send_message(encrypt)
         LOGGER.info(f"{uid}-{name}:监测到用户发放的课程或班级签到活动，取消签到")
-        return False
+        return False, sleep_time
     if res["data"]["otherId"] == 0:
         if res["data"]["ifphoto"] == 1:
             this_sign_type = "1"
             sign_type_name = "拍照签到"
+            sleep_time = USER_LIST[uid]["ws_port_delay"]["sign1"] if USER_LIST[uid]["ws_port_delay"]["type"] else sleep_time
         else:
             this_sign_type = "0"
             sign_type_name = "普通签到"
+            sleep_time = USER_LIST[uid]["ws_port_delay"]["sign0"] if USER_LIST[uid]["ws_port_delay"]["type"] else sleep_time
     elif res["data"]["otherId"] == 2:
         this_sign_type = "2"
         sign_type_name = "二维码签到"
@@ -1672,34 +1719,37 @@ async def check_sign_type(uid, name, activeid, sign_type):
         if res["data"]["ifopenAddress"] == 1:
             this_sign_type = "6"
             sign_type_name = "指定位置签到"
+            sleep_time = USER_LIST[uid]["ws_port_delay"]["sign6"] if USER_LIST[uid]["ws_port_delay"]["type"] else sleep_time
         else:
             this_sign_type = "4"
             sign_type_name = "普通位置签到"
+            sleep_time = USER_LIST[uid]["ws_port_delay"]["sign4"] if USER_LIST[uid]["ws_port_delay"]["type"] else sleep_time
     elif res["data"]["otherId"] == 5:
         this_sign_type = "5"
         sign_type_name = "签到码签到"
     else:
         await record_debug_log(f"{uid}-{name}:无法识别的签到类型", False)
-        return False
+        return False, sleep_time
     if this_sign_type in sign_type:
-        return True
+        return True, sleep_time
     else:
         await record_debug_log(f"{uid}-{name}:未开启该类型的自动签到，取消签到")
         event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
         encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}监测到签到类型为{sign_type_name}的签到活动，由于您关闭了该类型的自动签到，因此取消签到"}))
         await send_message(encrypt)
         LOGGER.info(f"{uid}-{name}:监测到签到类型为{sign_type_name}的签到活动，由于用户关闭了该类型的自动签到，因此取消签到")
-        return False
+        return False, sleep_time
 
 
-async def group_signt(uid, name, aid, is_numing, sign_num, name_one):
+async def group_signt(uid, name, aid, is_numing, sign_num, name_one, sleep_time):
     try:
         event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
         event_time2 = datetime.datetime.strftime(datetime.datetime.now(), "%Y-%m-%d %H:%M:%S")
         start_timestamp = int(time.time())
         start_time = datetime.datetime.strftime(datetime.datetime.fromtimestamp(start_timestamp), "%Y-%m-%d %H:%M:%S")
         wechat_end_time = datetime.datetime.strftime(datetime.datetime.fromtimestamp(start_timestamp+86400), "%Y-%m-%d %H:%M:%S")
-        await send_wechat_message(uid, "sign", "发现签到", "监控到签到活动，准备签到", icon="time", aid=aid, coursename="群聊", activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "签到活动名称": name_one, "签到类型": "群聊签到"}, is_group_sign=True)
+        d = {"签到监测时间": event_time2, "签到活动名称": name_one, "签到类型": "群聊签到"}
+        await send_wechat_message(uid, "sign", "发现签到", "监控到签到活动，准备签到", icon="time", aid=aid, coursename="群聊", activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d, is_group_sign=True)
         sign_data = {
             "activeId": aid,
             "uid": uid,
@@ -1712,15 +1762,15 @@ async def group_signt(uid, name, aid, is_numing, sign_num, name_one):
             "address": USER_LIST[uid]["address"],
             "ifTiJiao": "1"
         }
-        encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}等待10秒后开始自动签到"}))
+        encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}等待{sleep_time}秒后开始自动签到"}))
         await send_message(encrypt)
-        LOGGER.info(f"{uid}-{name}:等待10秒后开始自动签到")
-        await asyncio.sleep(10)
+        LOGGER.info(f"{uid}-{name}:等待{sleep_time}秒后开始自动签到")
+        await asyncio.sleep(sleep_time)
         info = await get_request(uid, name, USER_LIST[uid]["session"], "https://mobilelearn.chaoxing.com/sign/stuSignajax", sign_data, USER_LIST[uid]["header"], json_type=False)
         if info == "success":
             USER_LIST[uid]["success_sign_num"] += 1
             await send_email(uid, name, f"<p>[学习通在线自动签到系统签到成功通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] 群聊签到</p><p style=\"text-indent:2em\">[签到状态] 签到成功</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通群聊签到结果：签到成功")
-            await send_wechat_message(uid, "sign", "签到成功", "签到成功", icon="check-circle", aid=aid, coursename="群聊", activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "签到活动名称": name_one, "签到类型": "群聊签到"}, is_group_sign=True)
+            await send_wechat_message(uid, "sign", "签到成功", "签到成功", icon="check-circle", aid=aid, coursename="群聊", activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d, is_group_sign=True)
             encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}自动签到成功"}))
             await send_message(encrypt)
             LOGGER.info(f"{uid}-{name}:自动签到成功")
@@ -1738,7 +1788,7 @@ async def group_signt(uid, name, aid, is_numing, sign_num, name_one):
             task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] 群聊签到</p><p style=\"text-indent:2em\">[签到状态] 签到失败，您已签到过了</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通群聊签到结果：签到失败"))
             BACKGROUND_TASKS.add(task)
             task.add_done_callback(BACKGROUND_TASKS.discard)
-            await send_wechat_message(uid, "sign", "签到失败", "签到失败，您已签到过了", icon="close-octagon", aid=aid, coursename="群聊", activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "签到活动名称": name_one, "签到类型": "群聊签到"}, is_group_sign=True)
+            await send_wechat_message(uid, "sign", "签到失败", "签到失败，您已签到过了", icon="close-octagon", aid=aid, coursename="群聊", activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d, is_group_sign=True)
             event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
             encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}自动签到失败，失败原因为“您已签到过了”"}))
             await send_message(encrypt)
@@ -1747,7 +1797,7 @@ async def group_signt(uid, name, aid, is_numing, sign_num, name_one):
             task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] 群聊签到</p><p style=\"text-indent:2em\">[签到状态] 签到失败，{info}</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通群聊签到结果：签到失败"))
             BACKGROUND_TASKS.add(task)
             task.add_done_callback(BACKGROUND_TASKS.discard)
-            await send_wechat_message(uid, "sign", "签到失败", f"签到失败，{info}", icon="close-octagon", aid=aid, coursename="群聊", activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "签到活动名称": name_one, "签到类型": "群聊签到"}, is_group_sign=True)
+            await send_wechat_message(uid, "sign", "签到失败", f"签到失败，{info}", icon="close-octagon", aid=aid, coursename="群聊", activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d, is_group_sign=True)
             event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
             encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}自动签到失败，失败原因为“{info}”"}))
             await send_message(encrypt)
@@ -1810,11 +1860,12 @@ async def buildreleasesession(chatid, session):
 
 async def first_get_taskinfo(ws, message, uid, name):
     try:
-        if USER_LIST[uid]["first_check"]:
+        if USER_LIST[uid]["first_check"] is None:
             event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}开始清理websockets未读消息，此过程可能需要几分钟，请耐心等待"}))
+            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}开始清理websockets历史消息，此过程可能需要几分钟，请耐心等待"}))
             await send_message(encrypt)
-            LOGGER.info(f"{uid}-{name}:开始清理websockets未读消息")
+            LOGGER.info(f"{uid}-{name}:开始清理websockets历史消息")
+            USER_LIST[uid]["first_check"] = True
         if await getchatid(message):
             chatid_list = re.findall(rb"\x12-\n\)\x12\x0f(\d+)\x1a\x16conference.easemob.com\x10", message)
             for ID in chatid_list:
@@ -1823,11 +1874,17 @@ async def first_get_taskinfo(ws, message, uid, name):
             if chatid_list:
                 await asyncio.sleep(10)
                 await ws.close()
-        if USER_LIST[uid]["first_check"]:
+            elif USER_LIST[uid]["first_check"]:
+                event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}websockets历史消息清理完成，正在监听新的签到活动"}))
+                await send_message(encrypt)
+                LOGGER.info(f"{uid}-{name}:websockets历史消息清理完成，正在监听新的签到活动")
+                USER_LIST[uid]["first_check"] = False
+        elif USER_LIST[uid]["first_check"]:
             event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}websockets未读消息清理完成，正在监听新的签到活动"}))
+            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}websockets历史消息清理完成，正在监听新的签到活动"}))
             await send_message(encrypt)
-            LOGGER.info(f"{uid}-{name}:websockets未读消息清理完成，正在监听新的签到活动")
+            LOGGER.info(f"{uid}-{name}:websockets历史消息清理完成，正在监听新的签到活动")
             USER_LIST[uid]["first_check"] = False
     except Exception:
         await record_error_log(traceback.format_exc(), False)
@@ -1895,7 +1952,7 @@ async def get_taskinfo(ws, message):
         await record_error_log(traceback.format_exc(), False)
 
 
-async def ws_login(ws, uid, name, imusername, impassword):
+async def huanxin_ws_login(ws, uid, name, imusername, impassword):
     try:
         res = await post_request(uid, name, USER_LIST[uid]["session"], "https://a1-vip6.easemob.com/cx-dev/cxstudy/token", {"grant_type": "password", "username": imusername, "password": impassword}, True)
         if res["status_code"] == 200:
@@ -1907,6 +1964,10 @@ async def ws_login(ws, uid, name, imusername, impassword):
                 await ws.send(await json_encode([temp.decode()]))
             except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError):
                 await ws.close()
+        elif res["status_code"] == 10086:
+            await record_debug_log(f"{uid}-{name}:10086关闭连接", False)
+            await ws.close()
+            return
         else:
             await record_debug_log(f"{uid}-{name}:登录IM失败，无法获取token，准备执行签到监控异常停止事件", False)
             task = asyncio.create_task(stop_reason(1, uid, name, USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"]))
@@ -1968,7 +2029,7 @@ async def check_monitor_time(uid, name, schoolid, sign_type, is_timing, is_numin
                 LOGGER.info(f"{uid}-{name}:当前使用双接口进行签到监控")
             if 1 in port:
                 async with lock:
-                    USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(ws_connect(uid, name, schoolid, sign_type, is_numing, sign_num, tid, imusername, impassword)))
+                    USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(connect_to_huanxin_ws(uid, name, schoolid, sign_type, is_numing, sign_num, tid, imusername, impassword)))
             if 2 in port or 3 in port or 4 in port:
                 async with lock:
                     USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(start_sign(uid, name, schoolid, sign_type, is_numing, sign_num, port, tid, imusername, impassword)))
@@ -1976,7 +2037,7 @@ async def check_monitor_time(uid, name, schoolid, sign_type, is_timing, is_numin
         await record_error_log(traceback.format_exc(), False)
 
 
-async def ws_connect(uid, name, schoolid, sign_type, is_numing, sign_num, tid, imusername, impassword):
+async def connect_to_huanxin_ws(uid, name, schoolid, sign_type, is_numing, sign_num, tid, imusername, impassword):
     try:
         first_start = True
         ws = None
@@ -1987,8 +2048,8 @@ async def ws_connect(uid, name, schoolid, sign_type, is_numing, sign_num, tid, i
                 ws_str1 = str(int(random.random()*1000))
                 ws_str2 = ''.join(random.choices("abcdefghijklmnopqrstuvwxyz012345", k=8))
                 async with websockets.connect(f"wss://im-api-vip6-v2.easemob.com/ws/{ws_str1}/{ws_str2}/websocket", ping_interval=None, ping_timeout=None, ssl=SSL_CONTEXT) as ws:
-                    USER_LIST[uid]["ws"] = ws
                     if USER_LIST.get(uid):
+                        USER_LIST[uid]["ws"] = ws
                         USER_LIST[uid]["ws_heartbeat_time"] = time.time()
                         USER_LIST[uid]["ws_sign_heartbeat"] = asyncio.create_task(check_ws_heartbeat_message_time(ws, uid))
                     else:
@@ -2007,13 +2068,13 @@ async def ws_connect(uid, name, schoolid, sign_type, is_numing, sign_num, tid, i
                                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')}接口1每日0时至6时暂停签到监控"}))
                                 await send_message(encrypt)
                             elif now >= datetime.time(6) and is_night:
-                                await record_debug_log(f"{uid}-{name}:继续使用接口1进行签到监控")
+                                await record_debug_log(f"{uid}-{name}:每日6时之后继续使用接口1进行签到监控")
                                 is_night = False
-                                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')}接口1继续进行签到监控"}))
+                                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')}每日6时之后接口1继续进行签到监控"}))
                                 await send_message(encrypt)
                         if message == "o":
                             await record_debug_log(f"{uid}-{name}:开始登录IM")
-                            task = asyncio.create_task(ws_login(ws, uid, name, imusername, impassword))
+                            task = asyncio.create_task(huanxin_ws_login(ws, uid, name, imusername, impassword))
                             BACKGROUND_TASKS.add(task)
                             task.add_done_callback(BACKGROUND_TASKS.discard)
                         elif message[0] == "a":
@@ -2045,7 +2106,7 @@ async def ws_connect(uid, name, schoolid, sign_type, is_numing, sign_num, tid, i
                                     return
                             else:
                                 await record_debug_log(f"{uid}-{name}:开始解析消息内容")
-                                task = asyncio.create_task(get_message(ws, mess, uid, name, schoolid, sign_type, is_numing, sign_num, tid))
+                                task = asyncio.create_task(handle_huanxin_message(ws, mess, uid, name, schoolid, sign_type, is_numing, sign_num, tid))
                                 BACKGROUND_TASKS.add(task)
                                 task.add_done_callback(BACKGROUND_TASKS.discard)
             except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError, socket.gaierror, ConnectionResetError, TimeoutError, asyncio.exceptions.TimeoutError, OSError, websockets.exceptions.InvalidMessage):
@@ -2070,9 +2131,9 @@ async def ws_connect(uid, name, schoolid, sign_type, is_numing, sign_num, tid, i
 async def check_ws_heartbeat_message_time(ws, uid):
     try:
         while True:
-            if USER_LIST.get(uid) is None or (USER_LIST[uid].get("ws_heartbeat_time") and time.time() > USER_LIST[uid]["ws_heartbeat_time"]+60) or USER_LIST[uid]["ws"] != ws:
+            if USER_LIST.get(uid) is None or (USER_LIST[uid].get("ws_heartbeat_time") and time.time() > USER_LIST[uid]["ws_heartbeat_time"]+60) or USER_LIST[uid].get("ws") is not ws:
                 await ws.close()
-                break
+                return
             await asyncio.sleep(1)
     except Exception:
         await record_error_log(traceback.format_exc(), False)
@@ -2094,7 +2155,7 @@ async def check_sign_time(uid, name, schoolid, sign_type, is_numing, sign_num, d
                 else:
                     return
             if 1 in port:
-                USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(ws_connect(uid, name, schoolid, sign_type, is_numing, sign_num, tid, imusername, impassword)))
+                USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(connect_to_huanxin_ws(uid, name, schoolid, sign_type, is_numing, sign_num, tid, imusername, impassword)))
             if 2 in port or 3 in port or 4 in port:
                 USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(start_sign(uid, name, schoolid, sign_type, is_numing, sign_num, port, tid, imusername, impassword)))
             while int(time.time()) <= daterange[d][1]:
@@ -2162,6 +2223,8 @@ async def start_sign(uid, name, schoolid, sign_type, is_numing, sign_num, port, 
             BACKGROUND_TASKS.add(task)
             task.add_done_callback(BACKGROUND_TASKS.discard)
             return
+        if res.get("channelList") is None:
+            await record_error_log(f"{uid}-{name}:{res}")
         for d in res["channelList"]:
             if d["cataid"] == "100000002":
                 if d["content"]["roletype"] == 3:
@@ -2174,7 +2237,10 @@ async def start_sign(uid, name, schoolid, sign_type, is_numing, sign_num, port, 
                         if [d["content"]["id"], c["clazzId"]] not in not_append_list:
                             not_append_list.append([d["content"]["id"], c["clazzId"]])
         res = await post_request(uid, name, USER_LIST[uid]["session"], "https://a1-vip6.easemob.com/cx-dev/cxstudy/token", {"grant_type": "password", "username": imusername, "password": impassword}, True)
-        if res["status_code"] != 200:
+        if res["status_code"] == 10086:
+            await record_debug_log(f"{uid}-{name}:10086退出循环", False)
+            return
+        elif res["status_code"] != 200:
             await record_debug_log(f"{uid}-{name}:登录IM失败，无法获取token，准备执行签到监控异常停止事件", False)
             task = asyncio.create_task(stop_reason(2, uid, name, USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"]))
             BACKGROUND_TASKS.add(task)
@@ -2345,7 +2411,7 @@ async def delete_cookies(not_delete_uids: list[str]):
         return await asyncio.to_thread(__main)
 
 
-async def person_sign(uid, name, username, student_number, password, schoolid, cookie, port, sign_type, is_timing, is_numing, sign_num, daterange, set_address, address, longitude, latitude, set_objectid, objectid, bind_email, email, useragent, devicecode, lock):
+async def person_sign(uid, name, username, student_number, password, schoolid, cookie, port, ws_port_delay, sign_type, is_timing, is_numing, sign_num, daterange, set_address, address, longitude, latitude, set_objectid, objectid, bind_email, email, useragent, devicecode, lock):
     session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=SSL_CONTEXT))
     try:
         local_cookies = await get_cookies(uid)
@@ -2354,21 +2420,27 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
             if status["result"]:
                 status2 = await get_request(uid, name, session, "https://sso.chaoxing.com/apis/login/userLogin4Uname.do", {"ft": "true"})
                 if status2["result"]:
-                    if status2["msg"]["fid"] == 0:
+                    if status2.get("msg") is None:
+                        await record_debug_log(f"userLogin4Uname.do：{await json_encode(status2)}", False)
+                        return False
+                    elif status2["msg"]["fid"] == 0:
                         fid = ""
                     else:
                         fid = str(status2["msg"]["fid"])
-                    USER_LIST[uid] = {"port": port, "session": session, "name": status["realname"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": cookie, "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": True, "uncheck_course": [], "error_num": 0}
+                    USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status["realname"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": cookie, "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
                     USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(check_monitor_time(uid, name, schoolid, sign_type, is_timing, is_numing, sign_num, daterange, lock, port, status2["msg"]["uid"], status2["msg"]["accountInfo"]["imAccount"]["username"], status2["msg"]["accountInfo"]["imAccount"]["password"])))
                     return True
                 elif cookie:
                     status2 = await get_request(uid, name, session, "https://sso.chaoxing.com/apis/login/userLogin4Uname.do", {"ft": "true"}, cookie=cookie, need_cookie=True)
                     if status2["result"]:
-                        if status2["msg"]["fid"] == 0:
+                        if status2.get("msg") is None:
+                            await record_debug_log(f"userLogin4Uname.do：{await json_encode(status2)}", False)
+                            return False
+                        elif status2["msg"]["fid"] == 0:
                             fid = ""
                         else:
                             fid = str(status2["msg"]["fid"])
-                        USER_LIST[uid] = {"port": port, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": True, "uncheck_course": [], "error_num": 0}
+                        USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
                         task = asyncio.create_task(set_cookies(uid, status2["sign_cookie"]))
                         BACKGROUND_TASKS.add(task)
                         task.add_done_callback(BACKGROUND_TASKS.discard)
@@ -2385,11 +2457,14 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
                 if status["result"]:
                     status2 = await get_request(uid, name, session, "https://sso.chaoxing.com/apis/login/userLogin4Uname.do", {"ft": "true"})
                     if status2["result"]:
-                        if status2["msg"]["fid"] == 0:
+                        if status2.get("msg") is None:
+                            await record_debug_log(f"userLogin4Uname.do：{await json_encode(status2)}", False)
+                            return False
+                        elif status2["msg"]["fid"] == 0:
                             fid = ""
                         else:
                             fid = str(status2["msg"]["fid"])
-                        USER_LIST[uid] = {"port": port, "session": session, "name": status["realname"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": cookie, "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": True, "uncheck_course": [], "error_num": 0}
+                        USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status["realname"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": cookie, "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
                         USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(check_monitor_time(uid, name, schoolid, sign_type, is_timing, is_numing, sign_num, daterange, lock, port, status2["msg"]["uid"], status2["msg"]["accountInfo"]["imAccount"]["username"], status2["msg"]["accountInfo"]["imAccount"]["password"])))
                         return True
                     else:
@@ -2401,11 +2476,14 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
             elif cookie:
                 status2 = await get_request(uid, name, session, "https://sso.chaoxing.com/apis/login/userLogin4Uname.do", {"ft": "true"}, cookie=cookie, need_cookie=True)
                 if status2["result"]:
-                    if status2["msg"]["fid"] == 0:
+                    if status2.get("msg") is None:
+                        await record_debug_log(f"userLogin4Uname.do：{await json_encode(status2)}", False)
+                        return False
+                    elif status2["msg"]["fid"] == 0:
                         fid = ""
                     else:
                         fid = str(status2["msg"]["fid"])
-                    USER_LIST[uid] = {"port": port, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": True, "uncheck_course": [], "error_num": 0}
+                    USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
                     task = asyncio.create_task(set_cookies(uid, status2["sign_cookie"]))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
@@ -2421,11 +2499,14 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
             if local_cookies:
                 status2 = await get_request(uid, name, session, "https://sso.chaoxing.com/apis/login/userLogin4Uname.do", {"ft": "true"}, cookie=local_cookies, need_cookie=True)
                 if status2["result"]:
-                    if status2["msg"]["fid"] == 0:
+                    if status2.get("msg") is None:
+                        await record_debug_log(f"userLogin4Uname.do：{await json_encode(status2)}", False)
+                        return False
+                    elif status2["msg"]["fid"] == 0:
                         fid = ""
                     else:
                         fid = str(status2["msg"]["fid"])
-                    USER_LIST[uid] = {"port": port, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": True, "uncheck_course": [], "error_num": 0}
+                    USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
                     task = asyncio.create_task(set_cookies(uid, status2["sign_cookie"]))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
@@ -2433,11 +2514,14 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
                     return True
             status2 = await get_request(uid, name, session, "https://sso.chaoxing.com/apis/login/userLogin4Uname.do", {"ft": "true"}, cookie=cookie, need_cookie=True)
             if status2["result"]:
-                if status2["msg"]["fid"] == 0:
+                if status2.get("msg") is None:
+                    await record_debug_log(f"userLogin4Uname.do：{await json_encode(status2)}", False)
+                    return False
+                elif status2["msg"]["fid"] == 0:
                     fid = ""
                 else:
                     fid = str(status2["msg"]["fid"])
-                USER_LIST[uid] = {"port": port, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": True, "uncheck_course": [], "error_num": 0}
+                USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
                 task = asyncio.create_task(set_cookies(uid, status2["sign_cookie"]))
                 BACKGROUND_TASKS.add(task)
                 task.add_done_callback(BACKGROUND_TASKS.discard)
@@ -2499,10 +2583,13 @@ async def check_qrcode_from_uncheck_sign(uid, name, class_id, aid, qrcode_info, 
             await send_message(encrypt)
             LOGGER.info(f"{uid}-{name}:无法获取该签到所属班级信息，取消签到")
             return
-        if await check_sign_type(uid, name, aid, sign_type):
+        result, sleep_time = await check_sign_type(uid, name, aid, sign_type)
+        if result:
             pptactiveinfo = await getpptactiveinfo(uid, name, aid)
             if pptactiveinfo is False:
                 return
+            ifNeedVCode = pptactiveinfo["data"]["ifNeedVCode"]
+            openCheckFaceFlag = pptactiveinfo["data"]["openCheckFaceFlag"]
             name_one = pptactiveinfo["data"]["name"]
             event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
             encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的签到二维码，并以此监测到课程或班级“{na}”的签到活动，签到活动名称为“{name_one}”"}))
@@ -2552,6 +2639,8 @@ async def check_qrcode_from_uncheck_sign(uid, name, class_id, aid, qrcode_info, 
             set_address = ""
             set_longitude = -1
             set_latitude = -1
+            email_append_text = ""
+            wechat_append_text = {}
             if pptactiveinfo["data"]["ifrefreshewm"] == 1 and pptactiveinfo["data"]["ifopenAddress"] == 1:
                 await record_debug_log(f"{uid}-{name}:该签到二维码会刷新且指定了签到位置，开始获取签到指定位置信息")
                 sign_location_info = await get_sign_location_info(uid, name, check_aid)
@@ -2566,9 +2655,11 @@ async def check_qrcode_from_uncheck_sign(uid, name, class_id, aid, qrcode_info, 
                     set_longitude = sign_location_info["longitude"]
                     set_latitude = sign_location_info["latitude"]
                     send_text1 = "等待同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码"
-                    send_text2 = "，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到"
+                    send_text2 = f"，指定签到地点为“{set_address}”，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到"
+                    email_append_text = f"<p style=\"text-indent:2em\">[指定位置] {set_address}</p>"
+                    wechat_append_text = {"指定位置": set_address}
                 sign_type = f"{pptactiveinfo['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到"
-                await send_wechat_message(uid, "sign", "发现签到，等待扫码", f"{send_text1}来完成自动签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{pptactiveinfo['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text, is_qrcode_sign=True)
+                await send_wechat_message(uid, "sign", "发现签到，等待扫码", f"{send_text1}来完成自动签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{pptactiveinfo['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text | wechat_append_text, is_qrcode_sign=True)
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为{pptactiveinfo['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}{send_text2}，小程序使用教程见https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html"}))
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:监测到{pptactiveinfo['data']['ewmRefreshTime']}秒自动更新且指定了签到地点的二维码签到{activetype_append_text}")
@@ -2593,9 +2684,11 @@ async def check_qrcode_from_uncheck_sign(uid, name, class_id, aid, qrcode_info, 
                     set_longitude = sign_location_info["longitude"]
                     set_latitude = sign_location_info["latitude"]
                     send_text1 = "等待同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码"
-                    send_text2 = "，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到"
+                    send_text2 = f"，指定签到地点为“{set_address}”，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到"
+                    email_append_text = f"<p style=\"text-indent:2em\">[指定位置] {set_address}</p>"
+                    wechat_append_text = {"指定位置": set_address}
                 sign_type = "无自动更新且指定了签到地点的二维码签到"
-                await send_wechat_message(uid, "sign", "发现签到，等待扫码", f"{send_text1}来完成自动签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"无自动更新且指定了签到地点的二维码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text, is_qrcode_sign=True)
+                await send_wechat_message(uid, "sign", "发现签到，等待扫码", f"{send_text1}来完成自动签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"无自动更新且指定了签到地点的二维码签到{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text | wechat_append_text, is_qrcode_sign=True)
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为无自动更新且指定了签到地点的二维码签到{activetype_append_text}{send_text2}，小程序使用教程见https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html"}))
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:监测到无自动更新且指定了签到地点的二维码签到{activetype_append_text}")
@@ -2606,7 +2699,7 @@ async def check_qrcode_from_uncheck_sign(uid, name, class_id, aid, qrcode_info, 
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到为无自动更新且未指定签到地点的二维码签到{activetype_append_text}，请让同班同学使用微信小程序“WAADRI的工具箱”扫描学习通签到二维码来完成自动签到，小程序使用教程见https://doc.waadri.top/guide/%E4%BA%8C%E7%BB%B4%E7%A0%81%E7%AD%BE%E5%88%B0.html"}))
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:监测到无自动更新且未指定签到地点的二维码签到{activetype_append_text}")
-            temp_data = {"name": name, "courseid": course_id, "classid": class_id, "aid": aid, "aid_list": aid_list, "uid": uid, "lesson_name": na, "address": set_address, "longitude": set_longitude, "latitude": set_latitude, "event_time2": event_time2, "name_one": name_one, "sign_type": sign_type, "start_time": start_time, "end_time": end_time, "wechat_end_time": wechat_end_time, "timelong": timelong, "sign_status": False, "activetype_append_text": activetype_append_text, "signout_email_append_text": signout_email_append_text, "signout_wechat_append_text": signout_wechat_append_text, "start_timestamp": start_timestamp}
+            temp_data = {"name": name, "courseid": course_id, "classid": class_id, "aid": aid, "aid_list": aid_list, "uid": uid, "lesson_name": na, "address": set_address, "longitude": set_longitude, "latitude": set_latitude, "event_time2": event_time2, "name_one": name_one, "sign_type": sign_type, "start_time": start_time, "end_time": end_time, "wechat_end_time": wechat_end_time, "timelong": timelong, "sign_status": False, "activetype_append_text": activetype_append_text, "signout_email_append_text": signout_email_append_text, "signout_wechat_append_text": signout_wechat_append_text, "start_timestamp": start_timestamp, "email_append_text": email_append_text, "wechat_append_text": wechat_append_text, "ifNeedVCode": ifNeedVCode, "openCheckFaceFlag": openCheckFaceFlag}
             QRCODE_SIGN_DICT[f"{uid}{aid}"] = temp_data
             await record_debug_log(f"{uid}-{name}:签到相关信息写入二维码签到字典队列中")
             encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "add_qrcode_sign", "aid_list": aid_list, "name": name}))
@@ -2617,33 +2710,37 @@ async def check_qrcode_from_uncheck_sign(uid, name, class_id, aid, qrcode_info, 
                 latitude = set_latitude
             location = await json_encode({"result": 1, "latitude": latitude, "longitude": longitude, "mockData": {"strategy": 0, "probability": 0}, "address": address})
             res = await get_request(uid, name, client, "https://mobilelearn.chaoxing.com/newsign/signDetail", {"activePrimaryId": aid, "type": 1}, header)
+            if res.get("status") is None:
+                await record_error_log(f"{uid}-{name}:signDetail {await json_encode(res)}")
+                return
+            d = {"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text | wechat_append_text
             if res["status"] == 1:
                 await record_debug_log(f"{uid}-{name}:二维码签到未结束")
                 if (res["startTime"]["time"]/1000+86400) < int(time.time()):
                     await record_debug_log(f"{uid}-{name}:二维码签到发布时间超过24小时，取消签到")
                     if not QRCODE_SIGN_DICT[f"{uid}{aid}"]["sign_status"]:
                         QRCODE_SIGN_DICT[f"{uid}{aid}"]["sign_status"] = True
-                        task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到取消通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到取消"))
+                        task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到取消通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到取消"))
                         BACKGROUND_TASKS.add(task)
                         task.add_done_callback(BACKGROUND_TASKS.discard)
-                        await send_wechat_message(uid, "sign", "签到取消", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到", icon="error-circle", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text, is_qrcode_sign=True)
+                        await send_wechat_message(uid, "sign", "签到取消", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到", icon="error-circle", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d, is_qrcode_sign=True)
                         event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                         encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{na}”的签到二维码与指定位置信息，但该签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到"}))
                         await send_message(encrypt)
                         LOGGER.info(f"{uid}-{name}:收到同班同学从{source}提交的课程或班级“{na}”的签到二维码与指定位置信息，但该签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到")
                 else:
                     await record_debug_log(f"{uid}-{name}:二维码签到发布时间未超过24小时，开始签到")
-                    task = asyncio.create_task(qrcode_sign_handle(client, f"{uid}{aid}", name, USER_LIST[uid]["schoolid"], course_id, class_id, aid, uid, qrcode_info, enc, location, source, na, USER_LIST[uid]["is_numing"], USER_LIST[uid]["sign_num"], event_time2, name_one, sign_type, start_time, end_time, wechat_end_time, timelong, header, devicecode, activetype_append_text, signout_email_append_text, signout_wechat_append_text))
+                    task = asyncio.create_task(qrcode_sign_handle(client, f"{uid}{aid}", name, USER_LIST[uid]["schoolid"], course_id, class_id, aid, uid, qrcode_info, enc, location, source, na, USER_LIST[uid]["is_numing"], USER_LIST[uid]["sign_num"], event_time2, name_one, sign_type, start_time, end_time, wechat_end_time, timelong, header, devicecode, activetype_append_text, signout_email_append_text, signout_wechat_append_text, email_append_text, wechat_append_text, ifNeedVCode, openCheckFaceFlag))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
             else:
                 await record_debug_log(f"{uid}-{name}:二维码签到已结束，取消签到")
                 if not QRCODE_SIGN_DICT[f"{uid}{aid}"]["sign_status"]:
                     QRCODE_SIGN_DICT[f"{uid}{aid}"]["sign_status"] = True
-                    task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到取消通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到已结束，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到取消"))
+                    task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到取消通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到已结束，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到取消"))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
-                    await send_wechat_message(uid, "sign", "签到取消", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到已结束，系统将不再对当前二维码签到活动进行签到", icon="error-circle", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info={"签到监测时间": event_time2, "对应课程或班级": na, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text, is_qrcode_sign=True)
+                    await send_wechat_message(uid, "sign", "签到取消", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到已结束，系统将不再对当前二维码签到活动进行签到", icon="error-circle", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d, is_qrcode_sign=True)
                     event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{na}”的签到二维码与指定位置信息，但该签到已结束，系统将不再对当前二维码签到活动进行签到"}))
                     await send_message(encrypt)
@@ -2654,7 +2751,7 @@ async def check_qrcode_from_uncheck_sign(uid, name, class_id, aid, qrcode_info, 
 
 async def check_qrcode(d, aid, qrcode_info, address, longitude, latitude, source, session, header, devicecode):
     try:
-        if aid in QRCODE_SIGN_DICT[d]["aid_list"]:
+        if QRCODE_SIGN_DICT.get(d) and aid in QRCODE_SIGN_DICT[d]["aid_list"]:
             uid = QRCODE_SIGN_DICT[d]["uid"]
             name = QRCODE_SIGN_DICT[d]["name"]
             if QRCODE_SIGN_DICT[d]["address"] != "" and str(QRCODE_SIGN_DICT[d]["longitude"]) != "" and str(QRCODE_SIGN_DICT[d]["longitude"]) != "-1" and str(QRCODE_SIGN_DICT[d]["latitude"]) != "" and str(QRCODE_SIGN_DICT[d]["latitude"]) != "-1":
@@ -2665,6 +2762,10 @@ async def check_qrcode(d, aid, qrcode_info, address, longitude, latitude, source
             activetype_append_text = QRCODE_SIGN_DICT[d]["activetype_append_text"]
             signout_email_append_text = QRCODE_SIGN_DICT[d]["signout_email_append_text"]
             signout_wechat_append_text = QRCODE_SIGN_DICT[d]["signout_wechat_append_text"]
+            email_append_text = QRCODE_SIGN_DICT[d]["email_append_text"]
+            wechat_append_text = QRCODE_SIGN_DICT[d]["wechat_append_text"]
+            ifNeedVCode = QRCODE_SIGN_DICT[d]["ifNeedVCode"]
+            openCheckFaceFlag = QRCODE_SIGN_DICT[d]["openCheckFaceFlag"]
             await record_debug_log(f"{uid}-{name}:收到签到二维码，准备签到")
             parsed_url = urlparse(qrcode_info)
             query_string = parsed_url.query
@@ -2672,33 +2773,37 @@ async def check_qrcode(d, aid, qrcode_info, address, longitude, latitude, source
             enc = params_dict_list_values["enc"][0]
             location = await json_encode({"result": 1, "latitude": latitude, "longitude": longitude, "mockData": {"strategy": 0, "probability": 0}, "address": address})
             res = await get_request(uid, name, session, "https://mobilelearn.chaoxing.com/newsign/signDetail", {"activePrimaryId": aid, "type": 1}, header)
+            if res.get("status") is None:
+                await record_error_log(f"{uid}-{name}:signDetail {await json_encode(res)}")
+                return
+            d2 = {"签到监测时间": QRCODE_SIGN_DICT[d]["event_time2"], "对应课程或班级": lesson_name, "签到活动名称": QRCODE_SIGN_DICT[d]["name_one"], "签到类型": f"{QRCODE_SIGN_DICT[d]['sign_type']}{activetype_append_text}", "签到开始时间": QRCODE_SIGN_DICT[d]["start_time"], "签到结束时间": QRCODE_SIGN_DICT[d]["end_time"], "签到持续时间": QRCODE_SIGN_DICT[d]["timelong"]} | signout_wechat_append_text | wechat_append_text
             if res["status"] == 1:
                 await record_debug_log(f"{uid}-{name}:二维码签到未结束")
                 if (res["startTime"]["time"]/1000+86400) < int(time.time()):
                     await record_debug_log(f"{uid}-{name}:收到二维码且二维码签到发布时间超过24小时，取消签到")
                     if not QRCODE_SIGN_DICT[d]["sign_status"]:
                         QRCODE_SIGN_DICT[d]["sign_status"] = True
-                        task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到取消通知]</p><p style=\"text-indent:2em\">[签到监测时间] {QRCODE_SIGN_DICT[d]['event_time2']}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {QRCODE_SIGN_DICT[d]['name_one']}</p><p style=\"text-indent:2em\">[签到类型] {QRCODE_SIGN_DICT[d]['sign_type']}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {QRCODE_SIGN_DICT[d]['start_time']}</p><p style=\"text-indent:2em\">[签到结束时间] {QRCODE_SIGN_DICT[d]['end_time']}</p><p style=\"text-indent:2em\">[签到持续时间] {QRCODE_SIGN_DICT[d]['timelong']}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到取消"))
+                        task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到取消通知]</p><p style=\"text-indent:2em\">[签到监测时间] {QRCODE_SIGN_DICT[d]['event_time2']}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {QRCODE_SIGN_DICT[d]['name_one']}</p><p style=\"text-indent:2em\">[签到类型] {QRCODE_SIGN_DICT[d]['sign_type']}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {QRCODE_SIGN_DICT[d]['start_time']}</p><p style=\"text-indent:2em\">[签到结束时间] {QRCODE_SIGN_DICT[d]['end_time']}</p><p style=\"text-indent:2em\">[签到持续时间] {QRCODE_SIGN_DICT[d]['timelong']}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到取消"))
                         BACKGROUND_TASKS.add(task)
                         task.add_done_callback(BACKGROUND_TASKS.discard)
-                        await send_wechat_message(uid, "sign", "签到取消", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到", icon="error-circle", aid=aid, coursename=lesson_name, activename=QRCODE_SIGN_DICT[d]["name_one"], start_time=QRCODE_SIGN_DICT[d]["start_time"], stop_time=QRCODE_SIGN_DICT[d]["wechat_end_time"], sign_info={"签到监测时间": QRCODE_SIGN_DICT[d]["event_time2"], "对应课程或班级": lesson_name, "签到活动名称": QRCODE_SIGN_DICT[d]["name_one"], "签到类型": f"{QRCODE_SIGN_DICT[d]['sign_type']}{activetype_append_text}", "签到开始时间": QRCODE_SIGN_DICT[d]["start_time"], "签到结束时间": QRCODE_SIGN_DICT[d]["end_time"], "签到持续时间": QRCODE_SIGN_DICT[d]["timelong"]} | signout_wechat_append_text, is_qrcode_sign=True)
+                        await send_wechat_message(uid, "sign", "签到取消", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到", icon="error-circle", aid=aid, coursename=lesson_name, activename=QRCODE_SIGN_DICT[d]["name_one"], start_time=QRCODE_SIGN_DICT[d]["start_time"], stop_time=QRCODE_SIGN_DICT[d]["wechat_end_time"], sign_info=d2, is_qrcode_sign=True)
                         event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                         encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但该签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到"}))
                         await send_message(encrypt)
                         LOGGER.info(f"{uid}-{name}:收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但该签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到")
                 else:
                     await record_debug_log(f"{uid}-{name}:二维码签到发布时间未超过24小时，开始签到")
-                    task = asyncio.create_task(qrcode_sign_handle(session, d, name, USER_LIST[uid]["schoolid"], QRCODE_SIGN_DICT[d]["courseid"], QRCODE_SIGN_DICT[d]["classid"], aid, uid, qrcode_info, enc, location, source, lesson_name, USER_LIST[uid]["is_numing"], USER_LIST[uid]["sign_num"], QRCODE_SIGN_DICT[d]["event_time2"], QRCODE_SIGN_DICT[d]["name_one"], QRCODE_SIGN_DICT[d]["sign_type"], QRCODE_SIGN_DICT[d]["start_time"], QRCODE_SIGN_DICT[d]["end_time"], QRCODE_SIGN_DICT[d]["wechat_end_time"], QRCODE_SIGN_DICT[d]["timelong"], header, devicecode, activetype_append_text, signout_email_append_text, signout_wechat_append_text))
+                    task = asyncio.create_task(qrcode_sign_handle(session, d, name, USER_LIST[uid]["schoolid"], QRCODE_SIGN_DICT[d]["courseid"], QRCODE_SIGN_DICT[d]["classid"], aid, uid, qrcode_info, enc, location, source, lesson_name, USER_LIST[uid]["is_numing"], USER_LIST[uid]["sign_num"], QRCODE_SIGN_DICT[d]["event_time2"], QRCODE_SIGN_DICT[d]["name_one"], QRCODE_SIGN_DICT[d]["sign_type"], QRCODE_SIGN_DICT[d]["start_time"], QRCODE_SIGN_DICT[d]["end_time"], QRCODE_SIGN_DICT[d]["wechat_end_time"], QRCODE_SIGN_DICT[d]["timelong"], header, devicecode, activetype_append_text, signout_email_append_text, signout_wechat_append_text, email_append_text, wechat_append_text, ifNeedVCode, openCheckFaceFlag))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
             else:
                 await record_debug_log(f"{uid}-{name}:二维码签到已结束，取消签到")
                 if not QRCODE_SIGN_DICT[d]["sign_status"]:
                     QRCODE_SIGN_DICT[d]["sign_status"] = True
-                    task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到取消通知]</p><p style=\"text-indent:2em\">[签到监测时间] {QRCODE_SIGN_DICT[d]['event_time2']}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {QRCODE_SIGN_DICT[d]['name_one']}</p><p style=\"text-indent:2em\">[签到类型] {QRCODE_SIGN_DICT[d]['sign_type']}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {QRCODE_SIGN_DICT[d]['start_time']}</p><p style=\"text-indent:2em\">[签到结束时间] {QRCODE_SIGN_DICT[d]['end_time']}</p><p style=\"text-indent:2em\">[签到持续时间] {QRCODE_SIGN_DICT[d]['timelong']}</p>{signout_email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到已结束，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到取消"))
+                    task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统二维码签到取消通知]</p><p style=\"text-indent:2em\">[签到监测时间] {QRCODE_SIGN_DICT[d]['event_time2']}</p><p style=\"text-indent:2em\">[对应课程或班级] {lesson_name}</p><p style=\"text-indent:2em\">[签到活动名称] {QRCODE_SIGN_DICT[d]['name_one']}</p><p style=\"text-indent:2em\">[签到类型] {QRCODE_SIGN_DICT[d]['sign_type']}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {QRCODE_SIGN_DICT[d]['start_time']}</p><p style=\"text-indent:2em\">[签到结束时间] {QRCODE_SIGN_DICT[d]['end_time']}</p><p style=\"text-indent:2em\">[签到持续时间] {QRCODE_SIGN_DICT[d]['timelong']}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 收到同班同学从{source}提交的签到二维码与指定位置信息，但签到已结束，系统将不再对当前二维码签到活动进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], "学习通二维码签到结果：签到取消"))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
-                    await send_wechat_message(uid, "sign", "签到取消", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到已结束，系统将不再对当前二维码签到活动进行签到", icon="error-circle", aid=aid, coursename=lesson_name, activename=QRCODE_SIGN_DICT[d]["name_one"], start_time=QRCODE_SIGN_DICT[d]["start_time"], stop_time=QRCODE_SIGN_DICT[d]["wechat_end_time"], sign_info={"签到监测时间": QRCODE_SIGN_DICT[d]["event_time2"], "对应课程或班级": lesson_name, "签到活动名称": QRCODE_SIGN_DICT[d]["name_one"], "签到类型": f"{QRCODE_SIGN_DICT[d]['sign_type']}{activetype_append_text}", "签到开始时间": QRCODE_SIGN_DICT[d]["start_time"], "签到结束时间": QRCODE_SIGN_DICT[d]["end_time"], "签到持续时间": QRCODE_SIGN_DICT[d]["timelong"]} | signout_wechat_append_text, is_qrcode_sign=True)
+                    await send_wechat_message(uid, "sign", "签到取消", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到已结束，系统将不再对当前二维码签到活动进行签到", icon="error-circle", aid=aid, coursename=lesson_name, activename=QRCODE_SIGN_DICT[d]["name_one"], start_time=QRCODE_SIGN_DICT[d]["start_time"], stop_time=QRCODE_SIGN_DICT[d]["wechat_end_time"], sign_info=d2, is_qrcode_sign=True)
                     event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但该签到已结束，系统将不再对当前二维码签到活动进行签到"}))
                     await send_message(encrypt)
@@ -2789,7 +2894,8 @@ async def send_message(message):
                         await asyncio.sleep(1)
                     await sign_server_ws.send(message)
                     break
-                except websockets.exceptions.ConnectionClosedError:
+                except (websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK):
+                    await sign_server_ws.close()
                     await asyncio.sleep(1)
                 except Exception:
                     await record_error_log(traceback.format_exc())
