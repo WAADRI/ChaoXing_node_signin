@@ -121,13 +121,10 @@ services:
 ```
 
 ## 🎉 使用
-![image](https://github.com/user-attachments/assets/a1808fbb-735d-46e1-86a1-67e81a969b9a)
+![image](https://github.com/user-attachments/assets/36a3d9dd-3b29-4266-adc9-92abf868749f)
+![image](https://github.com/user-attachments/assets/dce11a2e-b0f5-4124-bb17-5a74e0edf361)
 
 运行上线后可在在线自动签到系统中点击 **其它第三方自选节点**，会自动弹出自选节点列表，选择并输入你设置的密码后即可使用所选节点进行签到监控。
-
-+ 2024/11 目前已有超过50个节点接入了系统，有十余个节点开放使用，欢迎大家继续积极贡献节点资源。
-
-![image](https://github.com/user-attachments/assets/bb4aee50-8ec7-4946-bc4c-0b55ca4a590c)
 
 ### 🎃 注意事项
 - 仅供学习交流，不要用于非法用途
