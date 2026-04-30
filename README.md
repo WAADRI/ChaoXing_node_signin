@@ -13,7 +13,7 @@
 <div align="center" style="font-weight:bold"><b>学习通在线自动签到系统第三方节点接入程序</b></div> 
 
 
-用于自行部署可接入 [学习通在线自动签到系统](https://cx.waadri.top/login) 的第三方节点，该节点程序需配合主系统使用！
+用于自行部署可接入 [学习通在线自动签到系统](https://doc.waadri.top/) 的第三方节点，该节点程序需配合主系统使用！
 
 ---
 
