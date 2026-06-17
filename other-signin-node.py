@@ -88,15 +88,16 @@ BROWSER_HEADER = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36",
     "X-Requested-With": "XMLHttpRequest"
 }
-NODE_VERSION = 3.8
+NODE_VERSION = 3.81
 USER_LIST = {}
 BACKGROUND_TASKS = set()
 SSL_CONTEXT = ssl.create_default_context()
 SSL_CONTEXT.load_verify_locations(certifi.where())
-SIGN_INFO_DICT = {"code": {}, "location": {}, "validate": {}, "fail_msg": {}}
+SIGN_INFO_DICT = {"code": {}, "location": {}, "validate": {}, "face": {}, "fail_msg": {}}
 LOCATION_LOCK = asyncio.Lock()
 CODE_LOCK = asyncio.Lock()
 VALIDATE_LOCK = asyncio.Lock()
+FACE_CHECK_LOCK = asyncio.Lock()
 MSG_SEND_LOCK = asyncio.Lock()
 SQL_LOCK = asyncio.Lock()
 NODE_CONFIG = {"email": {"address": "", "password": "", "use_tls": True, "host": "", "port": 465, "user": ""}, "node": {"name": "", "password": "", "limit": 0}, "show_frequently": True, "night_monitor": True, "debug": False, "uuid": ""}
@@ -743,6 +744,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     await record_debug_log(f"{uid}-{name}:未能成功获取签到指定位置信息，原因为“{sign_location_info['msg']}”", False)
                     send_text1 = f"指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”，等待同班同学使用微信小程序“WAADRI的工具箱”指定签到位置并扫描学习通签到二维码"
                     send_text2 = f"，但指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”，请让同班同学使用微信小程序“WAADRI的工具箱”指定签到位置并扫描学习通签到二维码来完成自动签到"
+                    SIGN_INFO_DICT["fail_msg"].pop(aid, None)
                 else:
                     await record_debug_log(f"{uid}-{name}:成功获取签到指定位置信息")
                     set_address = address
@@ -778,6 +780,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                     await record_debug_log(f"{uid}-{name}:未能成功获取签到指定位置信息，原因为“{sign_location_info['msg']}”", False)
                     send_text1 = f"指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”，等待同班同学使用微信小程序“WAADRI的工具箱”指定签到位置并扫描学习通签到二维码"
                     send_text2 = f"，但指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”，请让同班同学使用微信小程序“WAADRI的工具箱”指定签到位置并扫描学习通签到二维码来完成自动签到"
+                    SIGN_INFO_DICT["fail_msg"].pop(aid, None)
                 else:
                     await record_debug_log(f"{uid}-{name}:成功获取签到指定位置信息")
                     set_address = address
@@ -870,9 +873,9 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                 await send_message(encrypt)
                 sign_code_info = await get_sign_code_info(uid, name, check_aid)
                 signCode = sign_code_info["code"]
-                attack_time = sign_code_info["attack_time"]
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 if signCode is not None:
+                    attack_time = sign_code_info["attack_time"]
                     email_append_text = f"<p style=\"text-indent:2em\">[手势码] {signCode}</p>"
                     wechat_append_text = {"手势码": signCode}
                     await send_wechat_message(uid, "sign", "签到信息爆破成功，准备签到", f"签到手势码爆破成功，用时{attack_time}秒，准备签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
@@ -928,6 +931,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                         LOGGER.info(f"{uid}-{name}:自动签到失败，失败原因为“指定位置信息解析失败”")
                         USER_LIST[uid]["sign_task_list"].pop(aid, None)
                         await record_debug_log(f"{uid}-{name}:从签到任务列表中移除当前任务，aid:{aid}")
+                        SIGN_INFO_DICT["fail_msg"].pop(aid, None)
                         return
                     sign_data["ifTiJiao"] = "1"
                     sign_data["validate"] = ""
@@ -965,9 +969,9 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                 await send_message(encrypt)
                 sign_code_info = await get_sign_code_info(uid, name, check_aid)
                 signCode = sign_code_info["code"]
-                attack_time = sign_code_info["attack_time"]
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 if signCode is not None:
+                    attack_time = sign_code_info["attack_time"]
                     await send_wechat_message(uid, "sign", "签到信息爆破成功，准备签到", f"签到码爆破成功，用时{attack_time}秒，准备签到", icon="time", aid=aid, coursename=na, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}签到码爆破成功，用时{attack_time}秒"}))
                     await send_message(encrypt)
@@ -1012,17 +1016,24 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:该签到需要进行安全验证，尝试通过验证")
             else:
-                await record_debug_log(f"{uid}-{name}:签到无需进行安全验证，aid:{aid}")
+                await record_debug_log(f"{uid}-{name}:签到无需进行人脸识别和安全验证，aid:{aid}")
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到无需进行安全验证，将直接进行签到"}))
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}该签到无需进行人脸识别和安全验证，将直接进行签到"}))
                 await send_message(encrypt)
-                LOGGER.info(f"{uid}-{name}:该签到无需进行安全验证，将直接进行签到")
+                LOGGER.info(f"{uid}-{name}:该签到无需进行人脸识别和安全验证，将直接进行签到")
             if openCheckFaceFlag:
-                sign_data["currentFaceId"] = "575a5c2091850af8fed1289fc1ed9b80"
+                face_result = await check_face_result(uid, name, check_aid)
+                sign_data["faceEnc"] = face_result.get("enc", "")
+                sign_data["faceCode"] = face_result.get("code", "")
+                sign_data["currentFaceId"] = "575a5c2091850af8fed1289fc1ed9b81"
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}人脸识别验证已通过"}))
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}人脸识别和活体协议验证已通过"}))
                 await send_message(encrypt)
-                LOGGER.info(f"{uid}-{name}:人脸识别验证已通过")
+                LOGGER.info(f"{uid}-{name}:人脸识别和活体协议验证已通过")
+                if SIGN_INFO_DICT["face"].get(uid):
+                    SIGN_INFO_DICT["face"][uid].pop(aid, None)
+                    if not SIGN_INFO_DICT["face"].get(uid):
+                        SIGN_INFO_DICT["face"].pop(uid, None)
             while True:
                 try:
                     await get_request(uid, name, USER_LIST[uid]["session"], "https://mobilelearn.chaoxing.com/newsign/preSign", {"courseId": course_id, "classId": class_id, "activePrimaryId": aid, "general": 1, "sys": 1, "ls": 1, "appType": 15, "uid": uid, "tid": tid, "ut": "s"}, USER_LIST[uid]["header"], json_type=False)
@@ -1035,6 +1046,10 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
                             encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}安全验证已通过"}))
                             await send_message(encrypt)
                             LOGGER.info(f"{uid}-{name}:安全验证已通过")
+                            if SIGN_INFO_DICT["validate"].get(uid):
+                                SIGN_INFO_DICT["validate"][uid].pop(aid, None)
+                                if not SIGN_INFO_DICT["validate"].get(uid):
+                                    SIGN_INFO_DICT["validate"].pop(uid, None)
                         else:
                             await record_debug_log(f"{uid}-{name}:签到无法通过安全验证，取消签到，aid:{aid}", False)
                             task = asyncio.create_task(send_email(uid, name, f"<p>[学习通在线自动签到系统签到失败通知]</p><p style=\"text-indent:2em\">[签到监测时间] {event_time2}</p><p style=\"text-indent:2em\">[对应课程或班级] {na}</p><p style=\"text-indent:2em\">[签到活动名称] {name_one}</p><p style=\"text-indent:2em\">[签到类型] {sign_type}{activetype_append_text}</p><p style=\"text-indent:2em\">[签到开始时间] {start_time}</p><p style=\"text-indent:2em\">[签到结束时间] {end_time}</p><p style=\"text-indent:2em\">[签到持续时间] {timelong}</p>{signout_email_append_text}{email_append_text}<p style=\"text-indent:2em\">[签到状态] 由于签到需要进行安全验证且无法通过验证导致签到失败，请使用官方节点进行签到或自行登录学习通APP进行签到</p>", USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"], f"学习通{sign_type}结果：签到失败"))
@@ -1114,7 +1129,7 @@ async def signt(uid, name, course_id, class_id, aid, schoolid, is_numing, sign_n
 
 async def set_sign_location_info(aid, success_flag, address, longitude, latitude, msg):
     if success_flag:
-        SIGN_INFO_DICT["location"][aid] = {"address": address, "longitude": longitude, "latitude": latitude}
+        SIGN_INFO_DICT["location"][aid] = {"address": address, "longitude": longitude, "latitude": latitude, "time": int(time.time())}
     else:
         SIGN_INFO_DICT["fail_msg"][aid] = msg
     if LOCATION_LOCK.locked():
@@ -1123,7 +1138,7 @@ async def set_sign_location_info(aid, success_flag, address, longitude, latitude
 
 async def set_sign_code_info(aid, success_flag, code, attack_time, msg):
     if success_flag:
-        SIGN_INFO_DICT["code"][aid] = {"code": code, "attack_time": attack_time}
+        SIGN_INFO_DICT["code"][aid] = {"code": code, "attack_time": attack_time, "time": int(time.time())}
     else:
         SIGN_INFO_DICT["fail_msg"][aid] = msg
     if CODE_LOCK.locked():
@@ -1138,6 +1153,16 @@ async def set_sign_validate_info(uid, aid, success_flag, validate):
             SIGN_INFO_DICT["validate"][uid] = {aid: {"validate": validate}}
     if VALIDATE_LOCK.locked():
         VALIDATE_LOCK.release()
+
+
+async def set_face_check_result(uid, aid, success_flag, face_result):
+    if success_flag:
+        if SIGN_INFO_DICT["face"].get(uid):
+            SIGN_INFO_DICT["face"][uid][aid] = face_result
+        else:
+            SIGN_INFO_DICT["face"][uid] = {aid: face_result}
+    if FACE_CHECK_LOCK.locked():
+        FACE_CHECK_LOCK.release()
 
 
 async def get_sign_location_info(uid, name, aid):
@@ -1195,6 +1220,25 @@ async def get_sign_validate_info(uid, name, aid) -> None | str:
             if SIGN_INFO_DICT["validate"].get(uid) and SIGN_INFO_DICT["validate"][uid].get(aid):
                 return SIGN_INFO_DICT["validate"][uid][aid]
     return {"validate": None}
+
+
+async def check_face_result(uid, name, aid) -> None | str:
+    for i in range(2):
+        await FACE_CHECK_LOCK.acquire()
+        if i == 0:
+            if SIGN_INFO_DICT["face"].get(uid) and SIGN_INFO_DICT["face"][uid].get(aid):
+                if FACE_CHECK_LOCK.locked():
+                    FACE_CHECK_LOCK.release()
+                return SIGN_INFO_DICT["face"][uid][aid]
+            else:
+                encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "get_face_check_result", "uid": uid, "name": name, "username": USER_LIST[uid]["username"], "aid": aid, "cookie": USER_LIST[uid]["cookie"]}))
+                await send_message(encrypt)
+        else:
+            if FACE_CHECK_LOCK.locked():
+                FACE_CHECK_LOCK.release()
+            if SIGN_INFO_DICT["face"].get(uid) and SIGN_INFO_DICT["face"][uid].get(aid):
+                return SIGN_INFO_DICT["face"][uid][aid]
+    return {"status": 0, "code": "", "faceEnc": ""}
 
 
 def get_data_base64_encode(data):
@@ -1292,8 +1336,9 @@ async def handle_sign_server_ws_message(message):
                                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "online_start_sign", "uid": ll["uid"], "name": ll["name"]}))
                                     await send_message(encrypt)
                     await asyncio.sleep(10)
+                    now_time = int(time.time())
                     for k, d in list(QRCODE_SIGN_DICT.items()):
-                        if d["start_timestamp"]+86400 < int(time.time()):
+                        if d["start_timestamp"]+86400 < now_time:
                             uid = d["uid"]
                             name = d["name"]
                             await record_debug_log(f"{uid}-{name}:二维码签到发布时间超过24小时，取消签到")
@@ -1310,6 +1355,12 @@ async def handle_sign_server_ws_message(message):
                             await send_message(encrypt)
                             LOGGER.info(f"{uid}-{name}:监测到课程或班级“{lesson_name}”的二维码签到发布时长超过24小时，系统将不再对当前二维码签到活动进行签到")
                             QRCODE_SIGN_DICT.pop(k, None)
+                    for k, d in list(SIGN_INFO_DICT["location"].items()):
+                        if d["time"]+86400 < now_time:
+                            SIGN_INFO_DICT["location"].pop(k, None)
+                    for k, d in list(SIGN_INFO_DICT["code"].items()):
+                        if d["time"]+86400 < now_time:
+                            SIGN_INFO_DICT["code"].pop(k, None)
                 elif data["type"] == "stop_sign" or data["type"] == "force_stop_sign":
                     await remove_sign_info(data["uid"], data["name"])
                     encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": data["type"], "uid": data["uid"], "name": data["name"]}))
@@ -1340,6 +1391,10 @@ async def handle_sign_server_ws_message(message):
                     task.add_done_callback(BACKGROUND_TASKS.discard)
                 elif data["type"] == "get_sign_validate_info":
                     task = asyncio.create_task(set_sign_validate_info(data["uid"], data["aid"], data["result"], data["validate"]))
+                    BACKGROUND_TASKS.add(task)
+                    task.add_done_callback(BACKGROUND_TASKS.discard)
+                elif data["type"] == "get_face_check_result":
+                    task = asyncio.create_task(set_face_check_result(data["uid"], data["aid"], data["result"], data["face_result"]))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
                 elif data["type"] == "get_log":
@@ -1430,7 +1485,7 @@ async def sign_server_ws_monitor():
                         temp_list += d["aid_list"]
                 temp_list = list(set(temp_list))
                 encrypt = await asyncio.to_thread(get_data_aes_encode, NODE_CONFIG["node"]["name"])
-                data = {"t": t, "device_id": encrypt, "uuid": NODE_CONFIG["uuid"], "qrcode_sign_list": temp_list, "password": NODE_CONFIG["node"]["password"], "version": NODE_VERSION, "limit_number": NODE_CONFIG["node"]["limit"], "support_email": NODE_CONFIG["email"]["address"] != "", "night_monitor": NODE_CONFIG["night_monitor"], "token": "b7072e58e50f9edde4327a3f77e2dd41"}
+                data = {"t": t, "device_id": encrypt, "uuid": NODE_CONFIG["uuid"], "qrcode_sign_list": temp_list, "password": NODE_CONFIG["node"]["password"], "version": NODE_VERSION, "limit_number": NODE_CONFIG["node"]["limit"], "support_email": NODE_CONFIG["email"]["address"] != "", "night_monitor": NODE_CONFIG["night_monitor"], "token": "1c838103354a0ab4d0053f27db858831"}
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode(data))
                 async with MSG_SEND_LOCK:
                     await sign_server_ws.send(encrypt)
@@ -1439,18 +1494,14 @@ async def sign_server_ws_monitor():
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
         except (websockets.exceptions.ConnectionClosedOK, ConnectionRefusedError, websockets.exceptions.ConnectionClosedError, asyncio.exceptions.TimeoutError, OSError, websockets.exceptions.InvalidMessage, websockets.exceptions.InvalidStatus, websockets.exceptions.InvalidURI):
-            if sign_server_ws is not None:
-                await sign_server_ws.close()
-            LOGGER.warning("节点掉线，尝试重新上线...")
-            await asyncio.sleep(interval+random.uniform(0, 1))
-            interval = min(interval*2, 60)
+            pass
         except Exception:
-            if sign_server_ws is not None:
-                await sign_server_ws.close()
             await record_error_log(traceback.format_exc())
-            LOGGER.warning("节点掉线，尝试重新上线...")
-            await asyncio.sleep(interval+random.uniform(0, 1))
-            interval = min(interval*2, 60)
+        if sign_server_ws is not None:
+            await sign_server_ws.close()
+        LOGGER.warning("节点掉线，尝试重新上线...")
+        await asyncio.sleep(interval+random.uniform(0, 1))
+        interval = min(interval*2, 60)
 
 
 async def get_data_url_quote(data):
@@ -1477,7 +1528,14 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
         }
         d = {"签到监测时间": event_time2, "对应课程或班级": lesson_name, "签到活动名称": name_one, "签到类型": f"{sign_type}{activetype_append_text}", "签到开始时间": start_time, "签到结束时间": end_time, "签到持续时间": timelong} | signout_wechat_append_text | wechat_append_text
         if opencheckfaceflag:
-            qrcode_sign_params["currentFaceId"] = "575a5c2091850af8fed1289fc1ed9b80"
+            face_result = await check_face_result(uid, name, aid)
+            qrcode_sign_params["faceEnc"] = face_result.get("enc", "")
+            qrcode_sign_params["faceCode"] = face_result.get("code", "")
+            qrcode_sign_params["currentFaceId"] = "575a5c2091850af8fed1289fc1ed9b81"
+            if SIGN_INFO_DICT["face"].get(uid):
+                SIGN_INFO_DICT["face"][uid].pop(aid, None)
+                if not SIGN_INFO_DICT["face"].get(uid):
+                    SIGN_INFO_DICT["face"].pop(uid, None)
         while True:
             try:
                 await get_request(uid, name, session, qrcode_info, header=header, json_type=False)
@@ -1509,6 +1567,10 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
                                 return
                         qrcode_sign_params["validate"] = validate,
                         qrcode_sign_params["enc2"] = enc2
+                        if SIGN_INFO_DICT["validate"].get(uid):
+                            SIGN_INFO_DICT["validate"][uid].pop(aid, None)
+                            if not SIGN_INFO_DICT["validate"].get(uid):
+                                SIGN_INFO_DICT["validate"].pop(uid, None)
                     analysis_res = await get_request(uid, name, session, "https://mobilelearn.chaoxing.com/pptSign/analysis", {"vs": 1, "DB_STRATEGY": "RANDOM", "aid": aid}, header, json_type=False)
                     md5_pattern = re.compile(r"[a-f0-9]{32}")
                     md5_hash = md5_pattern.search(analysis_res)
@@ -1576,7 +1638,7 @@ async def qrcode_sign_handle(session, keys, name, schoolid, courseid, classid, a
                 await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但学习通提示“{txt}”，系统将不再对当前二维码签到活动进行签到")
         else:
-            if txt == "errorLocation1" or txt == "errorLocation2":
+            if txt == "errorLocation1" or txt == "errorLocation2" or txt == "errorLocation3":
                 await send_wechat_message(uid, "sign", "签到尝试失败", f"收到同班同学从{source}提交的签到二维码与指定位置信息，但签到失败，失败原因为“{txt}”，您所选位置可能不在教师指定签到位置范围内，请让同班同学使用微信小程序重新选择指定位置并扫描未过期的签到二维码，扫描后系统将继续尝试签到", icon="error-circle", aid=aid, coursename=lesson_name, activename=name_one, start_time=start_time, stop_time=wechat_end_time, sign_info=d)
                 event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到同班同学从{source}提交的课程或班级“{lesson_name}”的签到二维码与指定位置信息，但自动签到失败，失败原因为“{txt}”，您所选位置可能不在教师指定签到位置范围内，请让同班同学使用微信小程序重新选择指定位置并扫描未过期的签到二维码，扫描后系统将继续尝试签到"}))
@@ -1616,7 +1678,10 @@ async def handle_huanxin_message(ws, message, uid, name, schoolid, sign_type, is
             else:
                 index += 1
             temp = await asyncio.to_thread(get_data_base64_encode, await buildreleasesession(chatid, message[index:index+9]))
-            await ws.send(await json_encode([temp.decode()]))
+            try:
+                await ws.send(await json_encode([temp.decode()]))
+            except websockets.exceptions.ConnectionClosedOK:
+                await ws.close()
             if not NODE_CONFIG["night_monitor"] and datetime.datetime.now().time() < datetime.time(6):
                 return
             index += 10
@@ -1631,15 +1696,22 @@ async def handle_huanxin_message(ws, message, uid, name, schoolid, sign_type, is
                         try:
                             if "mobilelearn.chaoxing.com/newsign/preSign" in att["att_chat_course"]["url"] or "mobilelearn.chaoxing.com/widget/attendanceSign/student/studentSign" in att["att_chat_course"]["url"]:
                                 await record_debug_log(f"{uid}-{name}:此签到为课程或班级签到，活动ID:{aid}")
-                                result, sleep_time = await check_sign_type(uid, name, aid, sign_type)
-                                if result:
-                                    await record_debug_log(f"{uid}-{name}:此签到符合用户所设置的签到类型，开始签到，活动ID:{aid}")
+                                event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
+                                if USER_LIST[uid]["specified_course"] is None or (USER_LIST[uid]["specified_course"] is not None and [int(att["att_chat_course"]["courseInfo"]["courseid"]), int(att["att_chat_course"]["courseInfo"]["classid"])] in USER_LIST[uid]["specified_course"]):
+                                    result, sleep_time = await check_sign_type(uid, name, aid, sign_type)
+                                    if result:
+                                        await record_debug_log(f"{uid}-{name}:此签到符合用户所设置的签到类型，开始签到，活动ID:{aid}")
+                                        coursename = att["att_chat_course"]["courseInfo"].get("coursename", "未知课程")
+                                        encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到来自课程或班级“{coursename}”的签到活动，签到活动名称为“{att['att_chat_course']['title']}”"}))
+                                        await send_message(encrypt)
+                                        LOGGER.info(f"{uid}-{name}:收到来自课程或班级“{coursename}”的签到活动，签到活动名称为“{att['att_chat_course']['title']}”")
+                                        USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, att["att_chat_course"]["courseInfo"]["courseid"], att["att_chat_course"]["courseInfo"]["classid"], aid, schoolid, is_numing, sign_num, att["att_chat_course"]["title"], coursename, 1, sleep_time, tid))
+                                else:
                                     coursename = att["att_chat_course"]["courseInfo"].get("coursename", "未知课程")
-                                    event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
-                                    encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}收到来自课程或班级“{coursename}”的签到活动，签到活动名称为“{att['att_chat_course']['title']}”"}))
+                                    await record_debug_log(f"{uid}-{name}:未开启课程{coursename}的自动签到，取消签到")
+                                    encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}监测到课程“{coursename}”的签到活动，由于该课程不在学习通WAADRI文件夹中，因此取消签到"}))
                                     await send_message(encrypt)
-                                    LOGGER.info(f"{uid}-{name}:收到来自课程或班级“{coursename}”的签到活动，签到活动名称为“{att['att_chat_course']['title']}”")
-                                    USER_LIST[uid]["sign_task_list"][aid] = asyncio.create_task(signt(uid, name, att["att_chat_course"]["courseInfo"]["courseid"], att["att_chat_course"]["courseInfo"]["classid"], aid, schoolid, is_numing, sign_num, att["att_chat_course"]["title"], coursename, 1, sleep_time, tid))
+                                    LOGGER.info(f"{uid}-{name}:监测到课程“{coursename}”的签到活动，由于该课程不在学习通WAADRI文件夹中，因此取消签到")
                             elif att["att_chat_course"]["atype"] == 2:
                                 await record_debug_log(f"{uid}-{name}:此签到为群聊签到，活动ID:{aid}，签到链接：{att['att_chat_course'].get('url')}")
                                 if "7" in sign_type:
@@ -2027,6 +2099,7 @@ async def check_monitor_time(uid, name, schoolid, sign_type, is_timing, is_numin
                 async with lock:
                     await send_message(encrypt)
                 LOGGER.info(f"{uid}-{name}:当前使用双接口进行签到监控")
+            USER_LIST[uid]["main_sign_task"] = []
             if 1 in port:
                 async with lock:
                     USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(connect_to_huanxin_ws(uid, name, schoolid, sign_type, is_numing, sign_num, tid, imusername, impassword)))
@@ -2068,7 +2141,7 @@ async def connect_to_huanxin_ws(uid, name, schoolid, sign_type, is_numing, sign_
                                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')}接口1每日0时至6时暂停签到监控"}))
                                 await send_message(encrypt)
                             elif now >= datetime.time(6) and is_night:
-                                await record_debug_log(f"{uid}-{name}:每日6时之后继续使用接口1进行签到监控")
+                                await record_debug_log(f"{uid}-{name}:每日6时之后接口1继续进行签到监控")
                                 is_night = False
                                 encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{datetime.datetime.strftime(datetime.datetime.now(), '[%Y-%m-%d %H:%M:%S]')}每日6时之后接口1继续进行签到监控"}))
                                 await send_message(encrypt)
@@ -2110,20 +2183,17 @@ async def connect_to_huanxin_ws(uid, name, schoolid, sign_type, is_numing, sign_
                                 BACKGROUND_TASKS.add(task)
                                 task.add_done_callback(BACKGROUND_TASKS.discard)
             except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError, socket.gaierror, ConnectionResetError, TimeoutError, asyncio.exceptions.TimeoutError, OSError, websockets.exceptions.InvalidMessage):
-                if ws is not None:
-                    await ws.close()
-                if USER_LIST.get(uid) and USER_LIST[uid].get("ws_sign_heartbeat") and not USER_LIST[uid]["ws_sign_heartbeat"].done():
-                    USER_LIST[uid]["ws_sign_heartbeat"].cancel()
-                await asyncio.sleep(interval+random.uniform(0, 1))
-                interval = min(interval*2, 60)
+                pass
             except Exception:
-                if ws is not None:
-                    await ws.close()
                 await record_error_log(traceback.format_exc())
-                if USER_LIST.get(uid) and USER_LIST[uid].get("ws_sign_heartbeat") and not USER_LIST[uid]["ws_sign_heartbeat"].done():
-                    USER_LIST[uid]["ws_sign_heartbeat"].cancel()
-                await asyncio.sleep(interval+random.uniform(0, 1))
-                interval = min(interval*2, 60)
+            if ws is not None:
+                await ws.close()
+            if USER_LIST.get(uid) and USER_LIST[uid].get("ws_sign_heartbeat") and not USER_LIST[uid]["ws_sign_heartbeat"].done():
+                USER_LIST[uid]["ws_sign_heartbeat"].cancel()
+            await asyncio.sleep(interval+random.uniform(0, 1))
+            interval = min(interval*2, 60)
+            USER_LIST[uid]["ws_sign_heartbeat"] = None
+            USER_LIST[uid]["ws"] = None
     except Exception:
         await record_error_log(traceback.format_exc(), False)
 
@@ -2147,6 +2217,7 @@ async def check_sign_time(uid, name, schoolid, sign_type, is_numing, sign_num, d
             await send_message(encrypt)
             LOGGER.info(f"{uid}-{name}:当前使用双接口进行签到监控")
         for d in range(len(daterange)):
+            USER_LIST[uid]["main_sign_task"] = []
             if int(time.time()) > daterange[d][1]:
                 continue
             while daterange[d][0] > int(time.time()):
@@ -2225,8 +2296,36 @@ async def start_sign(uid, name, schoolid, sign_type, is_numing, sign_num, port, 
             return
         if res.get("channelList") is None:
             await record_error_log(f"{uid}-{name}:{res}")
+        cfid_list = []
+        all_course_list = []
         for d in res["channelList"]:
             if d["cataid"] == "100000002":
+                all_course_list.append(d)
+            elif d["cataid"] == "100000017" and "WAADRI" in d["content"]["folderName"].upper():
+                cfid_list.append(d["content"]["cfid"])
+        if cfid_list:
+            event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
+            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}课程列表中存在包含WAADRI字段的文件夹，将仅监控该文件夹内课程的签到活动"}))
+            await send_message(encrypt)
+            LOGGER.info(f"{uid}-{name}:课程列表中存在包含WAADRI字段的文件夹，将仅监控该文件夹内课程的签到活动")
+            USER_LIST[uid]["specified_course"] = []
+            for d in all_course_list:
+                if d["content"]["roletype"] == 3:
+                    if d["content"]["state"] == 0 and d["cfid"] in cfid_list:
+                        pushdata = {"courseid": d["content"]["course"]["data"][0]["id"], "name": d["content"]["course"]["data"][0]["name"], "classid": d["content"]["id"], "sign_number": 0}
+                        USER_LIST[uid]["clazzdata"].append(pushdata)
+                        USER_LIST[uid]["specified_course"].append([d["content"]["course"]["data"][0]["id"], d["content"]["id"]])
+                    not_append_list.append([d["content"]["course"]["data"][0]["id"], d["content"]["id"]])
+                else:
+                    for c in d["content"]["clazz"]:
+                        if [d["content"]["id"], c["clazzId"]] not in not_append_list:
+                            not_append_list.append([d["content"]["id"], c["clazzId"]])
+        else:
+            event_time = datetime.datetime.strftime(datetime.datetime.now(), "[%Y-%m-%d %H:%M:%S]")
+            encrypt = await asyncio.to_thread(get_data_aes_encode, await json_encode({"type": "send_sign_message", "uid": uid, "name": name, "message": f"{event_time}课程列表中不存在包含WAADRI字段的文件夹，将监控全部课程的签到活动"}))
+            await send_message(encrypt)
+            LOGGER.info(f"{uid}-{name}:课程列表中不存在包含WAADRI字段的文件夹，将监控全部课程的签到活动")
+            for d in all_course_list:
                 if d["content"]["roletype"] == 3:
                     if d["content"]["state"] == 0:
                         pushdata = {"courseid": d["content"]["course"]["data"][0]["id"], "name": d["content"]["course"]["data"][0]["name"], "classid": d["content"]["id"], "sign_number": 0}
@@ -2236,40 +2335,40 @@ async def start_sign(uid, name, schoolid, sign_type, is_numing, sign_num, port, 
                     for c in d["content"]["clazz"]:
                         if [d["content"]["id"], c["clazzId"]] not in not_append_list:
                             not_append_list.append([d["content"]["id"], c["clazzId"]])
-        res = await post_request(uid, name, USER_LIST[uid]["session"], "https://a1-vip6.easemob.com/cx-dev/cxstudy/token", {"grant_type": "password", "username": imusername, "password": impassword}, True)
-        if res["status_code"] == 10086:
-            await record_debug_log(f"{uid}-{name}:10086退出循环", False)
-            return
-        elif res["status_code"] != 200:
-            await record_debug_log(f"{uid}-{name}:登录IM失败，无法获取token，准备执行签到监控异常停止事件", False)
-            task = asyncio.create_task(stop_reason(2, uid, name, USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"]))
-            BACKGROUND_TASKS.add(task)
-            task.add_done_callback(BACKGROUND_TASKS.discard)
-            return
-        token = res["access_token"]
-        imuid = res["user"]["username"]
-        r = await get_joined_chatgroups(uid, name, imuid, token)
-        if not r:
-            return
-        cdata = r["data"]
-        for item in cdata:
-            if item["description"] != "" and item["description"] != "面对面群聊":
-                class_data = await json_decode(item["description"])
-                if (item["permission"] == "member" or item["permission"] == "admin") and class_data.get("groupType", 105) != 105 and class_data.get("courseInfo"):
-                    if item["name"] == "":
-                        course_name = class_data["courseInfo"]["coursename"]
-                    else:
-                        course_name = item["name"]
-                    if class_data["courseInfo"].get("courseid "):
-                        courseid = class_data["courseInfo"]["courseid "]
-                    elif class_data["courseInfo"].get("courseid"):
-                        courseid = class_data["courseInfo"]["courseid"]
-                    else:
-                        continue
-                    if [courseid, class_data["courseInfo"]["classid"]] not in not_append_list:
-                        pushdata = {"courseid": courseid, "name": course_name, "classid": class_data["courseInfo"]["classid"], "sign_number": 0}
-                        USER_LIST[uid]["clazzdata"].append(pushdata)
-                        not_append_list.append([courseid, class_data["courseInfo"]["classid"]])
+            res = await post_request(uid, name, USER_LIST[uid]["session"], "https://a1-vip6.easemob.com/cx-dev/cxstudy/token", {"grant_type": "password", "username": imusername, "password": impassword}, True)
+            if res["status_code"] == 10086:
+                await record_debug_log(f"{uid}-{name}:10086退出循环", False)
+                return
+            elif res["status_code"] != 200:
+                await record_debug_log(f"{uid}-{name}:登录IM失败，无法获取token，准备执行签到监控异常停止事件", False)
+                task = asyncio.create_task(stop_reason(2, uid, name, USER_LIST[uid]["bind_email"], USER_LIST[uid]["email"]))
+                BACKGROUND_TASKS.add(task)
+                task.add_done_callback(BACKGROUND_TASKS.discard)
+                return
+            token = res["access_token"]
+            imuid = res["user"]["username"]
+            r = await get_joined_chatgroups(uid, name, imuid, token)
+            if not r:
+                return
+            cdata = r["data"]
+            for item in cdata:
+                if item["description"] != "" and item["description"] != "面对面群聊":
+                    class_data = await json_decode(item["description"])
+                    if (item["permission"] == "member" or item["permission"] == "admin") and class_data.get("groupType", 105) != 105 and class_data.get("courseInfo"):
+                        if item["name"] == "":
+                            course_name = class_data["courseInfo"]["coursename"]
+                        else:
+                            course_name = item["name"]
+                        if class_data["courseInfo"].get("courseid "):
+                            courseid = class_data["courseInfo"]["courseid "]
+                        elif class_data["courseInfo"].get("courseid"):
+                            courseid = class_data["courseInfo"]["courseid"]
+                        else:
+                            continue
+                        if [courseid, class_data["courseInfo"]["classid"]] not in not_append_list:
+                            pushdata = {"courseid": courseid, "name": course_name, "classid": class_data["courseInfo"]["classid"], "sign_number": 0}
+                            USER_LIST[uid]["clazzdata"].append(pushdata)
+                            not_append_list.append([courseid, class_data["courseInfo"]["classid"]])
         rt = 0
         monitor_port = ""
         if USER_LIST.get(uid):
@@ -2427,7 +2526,7 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
                         fid = ""
                     else:
                         fid = str(status2["msg"]["fid"])
-                    USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status["realname"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": cookie, "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
+                    USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status["realname"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": cookie, "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "specified_course": None, "uncheck_course": [], "error_num": 0}
                     USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(check_monitor_time(uid, name, schoolid, sign_type, is_timing, is_numing, sign_num, daterange, lock, port, status2["msg"]["uid"], status2["msg"]["accountInfo"]["imAccount"]["username"], status2["msg"]["accountInfo"]["imAccount"]["password"])))
                     return True
                 elif cookie:
@@ -2440,7 +2539,7 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
                             fid = ""
                         else:
                             fid = str(status2["msg"]["fid"])
-                        USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
+                        USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "specified_course": None, "uncheck_course": [], "error_num": 0}
                         task = asyncio.create_task(set_cookies(uid, status2["sign_cookie"]))
                         BACKGROUND_TASKS.add(task)
                         task.add_done_callback(BACKGROUND_TASKS.discard)
@@ -2464,7 +2563,7 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
                             fid = ""
                         else:
                             fid = str(status2["msg"]["fid"])
-                        USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status["realname"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": cookie, "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
+                        USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status["realname"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": cookie, "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "specified_course": None, "uncheck_course": [], "error_num": 0}
                         USER_LIST[uid]["main_sign_task"].append(asyncio.create_task(check_monitor_time(uid, name, schoolid, sign_type, is_timing, is_numing, sign_num, daterange, lock, port, status2["msg"]["uid"], status2["msg"]["accountInfo"]["imAccount"]["username"], status2["msg"]["accountInfo"]["imAccount"]["password"])))
                         return True
                     else:
@@ -2483,7 +2582,7 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
                         fid = ""
                     else:
                         fid = str(status2["msg"]["fid"])
-                    USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
+                    USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "specified_course": None, "uncheck_course": [], "error_num": 0}
                     task = asyncio.create_task(set_cookies(uid, status2["sign_cookie"]))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
@@ -2506,7 +2605,7 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
                         fid = ""
                     else:
                         fid = str(status2["msg"]["fid"])
-                    USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
+                    USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "specified_course": None, "uncheck_course": [], "error_num": 0}
                     task = asyncio.create_task(set_cookies(uid, status2["sign_cookie"]))
                     BACKGROUND_TASKS.add(task)
                     task.add_done_callback(BACKGROUND_TASKS.discard)
@@ -2521,7 +2620,7 @@ async def person_sign(uid, name, username, student_number, password, schoolid, c
                     fid = ""
                 else:
                     fid = str(status2["msg"]["fid"])
-                USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "uncheck_course": [], "error_num": 0}
+                USER_LIST[uid] = {"port": port, "ws_port_delay": ws_port_delay, "session": session, "name": status2["msg"]["name"], "username": username, "password": password, "student_number": student_number, "schoolid": fid, "cookie": status2["sign_cookie"], "sign_type": sign_type, "is_timing": is_timing, "is_numing": is_numing, "daterange": daterange, "sign_num": sign_num, "set_address": set_address, "address": address, "longitude": longitude, "latitude": latitude, "set_objectId": set_objectid, "objectId": objectid, "bind_email": bind_email, "email": email, "header": {"Accept-Encoding": "gzip, deflate", "Accept-Language": "zh-CN,zh;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "User-Agent": useragent}, "deviceCode": devicecode, "signed_in_list": [], "success_sign_num": 0, "sign_task_list": {}, "main_sign_task": [], "first_check": None, "specified_course": None, "uncheck_course": [], "error_num": 0}
                 task = asyncio.create_task(set_cookies(uid, status2["sign_cookie"]))
                 BACKGROUND_TASKS.add(task)
                 task.add_done_callback(BACKGROUND_TASKS.discard)
@@ -2649,6 +2748,7 @@ async def check_qrcode_from_uncheck_sign(uid, name, class_id, aid, qrcode_info, 
                     await record_debug_log(f"{uid}-{name}:未能成功获取签到指定位置信息，原因为“{sign_location_info['msg']}”", False)
                     send_text1 = f"指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”，等待同班同学使用微信小程序“WAADRI的工具箱”指定签到位置并扫描学习通签到二维码"
                     send_text2 = f"，但指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”，请让同班同学使用微信小程序“WAADRI的工具箱”指定签到位置并扫描学习通签到二维码来完成自动签到"
+                    SIGN_INFO_DICT["fail_msg"].pop(aid, None)
                 else:
                     await record_debug_log(f"{uid}-{name}:成功获取签到指定位置信息")
                     set_address = address
@@ -2678,6 +2778,7 @@ async def check_qrcode_from_uncheck_sign(uid, name, class_id, aid, qrcode_info, 
                     await record_debug_log(f"{uid}-{name}:未能成功获取签到指定位置信息，原因为“{sign_location_info['msg']}”", False)
                     send_text1 = f"指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”，等待同班同学使用微信小程序“WAADRI的工具箱”指定签到位置并扫描学习通签到二维码"
                     send_text2 = f"，但指定位置信息解析失败，失败原因为“{sign_location_info['msg']}”，请让同班同学使用微信小程序“WAADRI的工具箱”指定签到位置并扫描学习通签到二维码来完成自动签到"
+                    SIGN_INFO_DICT["fail_msg"].pop(aid, None)
                 else:
                     await record_debug_log(f"{uid}-{name}:成功获取签到指定位置信息")
                     set_address = address
@@ -2896,13 +2997,10 @@ async def send_message(message):
                     break
                 except (websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK):
                     await sign_server_ws.close()
-                    await asyncio.sleep(1)
                 except Exception:
                     await record_error_log(traceback.format_exc())
-                    await asyncio.sleep(1)
-            else:
-                await asyncio.sleep(1)
-                continue
+            await asyncio.sleep(1)
+            continue
         except Exception:
             await record_error_log(traceback.format_exc(), False)
 
